@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "id": "com.mwhuss.omarchy-hermes-api",
+  "name": "Hermes Agent",
+  "version": "1.0.0",
+  "author": "mwhuss",
+  "license": "MIT",
+  "description": "Manage Hermes Agent sessions, stream responses, and track real-time tool executions from the Omarchy menu bar.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Hermes Agent",
+    "description": "Hermes Agent session manager and interactive chat popup.",
+    "category": "AI",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30,
+      "showBadge": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Session refresh interval (seconds)",
+        "min": 5,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "showBadge",
+        "type": "boolean",
+        "label": "Show active status badge in bar",
+        "defaultValue": true
+      }
+    ]
+  }
+}

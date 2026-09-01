@@ -1,0 +1,23 @@
+{
+  "name": "omarchy-hermes-api",
+  "version": "1.0.0",
+  "description": "Omarchy menu bar plugin for managing and interacting with Hermes Agent sessions",
+  "main": "bin/hermes-bridge.js",
+  "scripts": {
+    "test": "node test/test-bridge.js",
+    "install-plugin": "bash bin/install.sh"
+  },
+  "keywords": [
+    "omarchy",
+    "quickshell",
+    "hermes-agent",
+    "openai",
+    "menubar",
+    "plugin"
+  ],
+  "author": "mwhuss",
+  "license": "MIT",
+  "dependencies": {
+    "openai": "4.86.1"
+  }
+}
