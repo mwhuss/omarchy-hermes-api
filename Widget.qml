@@ -54,10 +54,8 @@ Panel {
     return decodeURIComponent(u.replace(/^file:\/\//, ""))
   }
 
-  readonly property int barContentWidth: Style.bar.iconFont + (root.isConnected ? Style.space(10) : Style.space(6)) + Style.space(12)
-  readonly property int barSlot: barContentWidth + Style.space(6)
-  implicitWidth: bar && bar.vertical ? (bar ? bar.barSize : Style.bar.sizeHorizontal) : barSlot
-  implicitHeight: bar && bar.vertical ? barSlot : (bar ? bar.barSize : Style.bar.sizeHorizontal)
+  implicitWidth: button.implicitWidth
+  implicitHeight: button.implicitHeight
 
   Timer {
     id: refreshAnimationTimer
@@ -519,43 +517,39 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    opticalSize: root.barContentWidth
     tooltipText: root.isConnected ? "Hermes Agent (Live)" : "Hermes Agent (Offline)"
 
     iconComponent: Component {
       Item {
-        anchors.centerIn: parent
-        width: root.barContentWidth
-        height: root.barSize
+        anchors.fill: parent
 
-        Row {
+        Text {
+          id: iconGlyph
           anchors.centerIn: parent
-          spacing: Style.space(6)
+          text: root.setting("icon", "\u{f06d3}") // Feather (f06d3)
+          textFormat: Text.PlainText
+          font.family: root.fontFamily
+          font.pixelSize: Style.bar.iconFont
+          renderType: Text.NativeRendering
+          color: root.opened ? root.accent : (root.isStreaming ? "#10B981" : (root.isConnected ? root.foreground : root.dimText))
+        }
 
-          Text {
-            anchors.verticalCenter: parent.verticalCenter
-            text: root.setting("icon", "\uF0E7") // Lightning bolt
-            textFormat: Text.PlainText
-            font.family: root.fontFamily
-            font.pixelSize: Style.bar.iconFont
-            renderType: Text.NativeRendering
-            color: root.opened ? root.accent : (root.isStreaming ? "#10B981" : (root.isConnected ? root.foreground : root.dimText))
-          }
+        // Active indicator dot in the lower right corner of the feather
+        Rectangle {
+          width: 4
+          height: 4
+          radius: 2
+          anchors.right: iconGlyph.right
+          anchors.bottom: iconGlyph.bottom
+          anchors.rightMargin: -1
+          anchors.bottomMargin: 2
+          color: root.isStreaming ? "#10B981" : (root.isConnected ? "#3B82F6" : "#EF4444")
 
-          // Active indicator dot
-          Rectangle {
-            anchors.verticalCenter: parent.verticalCenter
-            width: 6
-            height: 6
-            radius: 3
-            color: root.isStreaming ? "#10B981" : (root.isConnected ? "#3B82F6" : "#EF4444")
-
-            SequentialAnimation on opacity {
-              running: root.isStreaming
-              loops: Animation.Infinite
-              NumberAnimation { from: 0.3; to: 1.0; duration: 500 }
-              NumberAnimation { from: 1.0; to: 0.3; duration: 500 }
-            }
+          SequentialAnimation on opacity {
+            running: root.isStreaming
+            loops: Animation.Infinite
+            NumberAnimation { from: 0.3; to: 1.0; duration: 500 }
+            NumberAnimation { from: 1.0; to: 0.3; duration: 500 }
           }
         }
       }
@@ -604,7 +598,7 @@ Panel {
             spacing: 8
 
             Text {
-              text: root.setting("icon", "\uF0E7")
+              text: root.setting("icon", "\u{f06d3}")
               font.family: root.fontFamily
               font.pixelSize: 14
               color: root.accent
@@ -1152,7 +1146,7 @@ Panel {
                     spacing: 12
 
                     Text {
-                      text: "\uF0E7"
+                      text: root.setting("icon", "\u{f06d3}")
                       font.family: root.fontFamily
                       font.pixelSize: 32
                       color: root.accent
