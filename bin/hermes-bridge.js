@@ -385,8 +385,39 @@ async function handleDeleteSession(sessionId) {
   }
 }
 
+function sendDesktopNotification(title, message, isError = false) {
+  const { spawn } = require('child_process');
+  let cleanMsg = String(message || '').trim();
+  cleanMsg = cleanMsg.replace(/```[\s\S]*?```/g, '[Code]');
+  cleanMsg = cleanMsg.replace(/`([^`]+)`/g, '$1');
+  cleanMsg = cleanMsg.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+  cleanMsg = cleanMsg.replace(/[*_~>#]/g, '');
+  cleanMsg = cleanMsg.replace(/\s+/g, ' ').trim();
+  if (cleanMsg.length > 140) cleanMsg = cleanMsg.slice(0, 137) + '...';
+  if (!cleanMsg) cleanMsg = isError ? 'An error occurred.' : 'Response completed.';
+
+  const urgency = isError ? 'critical' : 'normal';
+  const glyph = isError ? '\u{f015a}' : '\u{f06d3}';
+
+  const script = 'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
+    '  omarchy-notification-send --app-name "Hermes Agent" -u "$1" -g "$2" "$3" "$4"; ' +
+    'else ' +
+    '  notify-send -a "Hermes Agent" -u "$1" "$3" "$4"; ' +
+    'fi';
+
+  try {
+    const child = spawn('bash', ['-lc', script, 'bash', urgency, glyph, title, cleanMsg], {
+      detached: true,
+      stdio: 'ignore'
+    });
+    child.unref();
+  } catch (e) {
+    // Ignore notification errors
+  }
+}
+
 async function handleStreamChat(options) {
-  const { sessionId, prompt, model, history, systemPrompt } = options;
+  const { sessionId, prompt, model, history, systemPrompt, notify } = options;
 
   if (!prompt || typeof prompt !== 'string') {
     process.stdout.write(JSON.stringify({ type: 'error', error: 'Prompt is required' }) + '\n');
@@ -489,11 +520,18 @@ async function handleStreamChat(options) {
       finish_reason: 'stop'
     }) + '\n');
 
+    if (notify) {
+      sendDesktopNotification('Hermes Agent', fullText, false);
+    }
   } catch (err) {
     process.stdout.write(JSON.stringify({
       type: 'error',
       error: err.message
     }) + '\n');
+
+    if (notify) {
+      sendDesktopNotification('Hermes Agent - Error', err.message, true);
+    }
   }
 }
 
@@ -563,6 +601,7 @@ async function main() {
       let model = 'hermes-agent';
       let systemPrompt = '';
       let history = [];
+      let notify = false;
 
       for (let i = 1; i < args.length; i++) {
         if (args[i] === '--session' && args[i + 1]) {
@@ -573,6 +612,8 @@ async function main() {
           systemPrompt = args[++i];
         } else if (args[i] === '--model' && args[i + 1]) {
           model = args[++i];
+        } else if (args[i] === '--notify') {
+          notify = true;
         } else if (args[i] === '--history' && args[i + 1]) {
           try {
             history = JSON.parse(args[++i]);
@@ -588,13 +629,14 @@ async function main() {
             systemPrompt = parsed.systemPrompt || parsed.system || systemPrompt;
             model = parsed.model || model;
             history = parsed.history || history;
+            notify = parsed.notify || notify;
           } catch (e) {
             // ignore
           }
         }
       }
 
-      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt });
+      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify });
       break;
     }
 

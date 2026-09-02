@@ -113,17 +113,50 @@ async function testRenameSession() {
   }
 }
 
+async function testManifest() {
+  console.log('Testing: manifest.json schema and defaults...');
+  const manifestPath = path.join(__dirname, '..', 'manifest.json');
+  const manifest = JSON.parse(require('fs').readFileSync(manifestPath, 'utf8'));
+  
+  assert.strictEqual(manifest.id, 'com.mwhuss.omarchy-hermes-api');
+  assert.strictEqual(manifest.barWidget.defaults.notifyOnComplete, true);
+  assert.strictEqual(manifest.barWidget.defaults.notifyOnError, true);
+
+  const keys = manifest.barWidget.schema.map(s => s.key);
+  assert(keys.includes('notifyOnComplete'), 'Schema should include notifyOnComplete');
+  assert(keys.includes('notifyOnError'), 'Schema should include notifyOnError');
+  console.log('  ✔ manifest configuration validation passed');
+}
+
+async function testStreamChatNotify() {
+  console.log('Testing: stream-chat with --notify flag...');
+  const res = await runBridge(['stream-chat', '--prompt', 'Respond with "OK" only.', '--notify']);
+  assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+
+  const lines = res.stdout.trim().split('\n');
+  assert(lines.length > 0, 'Should output at least one NDJSON event line');
+
+  const events = lines.map(l => JSON.parse(l));
+  const types = events.map(e => e.type);
+
+  assert(types.includes('start'), 'Should have a start event');
+  assert(types.includes('done'), 'Should have a done event');
+  console.log('  ✔ stream-chat with --notify completed successfully');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
   console.log('====================================\n');
 
   try {
+    await testManifest();
     await testStatus();
     await testListSessions();
     await testGetSession();
     await testRenameSession();
     await testStreamChat();
+    await testStreamChatNotify();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
     console.log('====================================\n');

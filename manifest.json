@@ -21,7 +21,9 @@
     "defaultSection": "right",
     "defaults": {
       "refreshIntervalSec": 30,
-      "showBadge": true
+      "showBadge": true,
+      "notifyOnComplete": true,
+      "notifyOnError": true
     },
     "schema": [
       {
@@ -37,6 +39,18 @@
         "key": "showBadge",
         "type": "boolean",
         "label": "Show active status badge in bar",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyOnComplete",
+        "type": "boolean",
+        "label": "Notify when response completes",
+        "defaultValue": true
+      },
+      {
+        "key": "notifyOnError",
+        "type": "boolean",
+        "label": "Notify on error",
         "defaultValue": true
       }
     ]

@@ -10,6 +10,7 @@ Panel {
   id: root
   moduleName: "com.mwhuss.omarchy-hermes-api"
   ipcTarget: "com.mwhuss.omarchy-hermes-api"
+  manageIpc: false
 
   property bool isConnected: false
   property bool isStreaming: false
@@ -28,6 +29,7 @@ Panel {
   property string currentModel: "hermes-agent"
   property string searchQuery: ""
   property bool omarchyOnly: false
+  property string streamingSessionId: ""
 
   // Active chat state
   property var messages: []
@@ -126,13 +128,11 @@ Panel {
   }
 
   function selectSession(sessionId) {
-    if (isStreaming) return
+    if (selectedSessionId === sessionId) return
     isEditingTitle = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
     selectedSessionId = sessionId
-    currentStreamingContent = ""
-    currentToolEvents = []
     
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].id === sessionId) {
@@ -141,10 +141,11 @@ Panel {
       }
     }
 
-    if (!getSessionProc.running) {
-      getSessionProc.command = ["node", root.scriptPath, "get-session", sessionId]
-      getSessionProc.running = true
+    if (getSessionProc.running) {
+      getSessionProc.running = false
     }
+    getSessionProc.command = ["node", root.scriptPath, "get-session", sessionId]
+    getSessionProc.running = true
 
     Qt.callLater(function() {
       if (promptInput) promptInput.forceActiveFocus()
@@ -227,6 +228,7 @@ Panel {
     promptInput.text = ""
     currentStreamingContent = ""
     currentToolEvents = []
+    root.streamingSessionId = root.selectedSessionId
 
     var updated = messages.slice()
     updated.push({ role: "user", content: text, timestamp: new Date().toISOString() })
@@ -267,8 +269,11 @@ Panel {
     try {
       var ev = JSON.parse(trimmed)
       if (ev.type === "start") {
-        if (ev.session_id && !root.selectedSessionId) {
-          root.selectedSessionId = ev.session_id
+        if (ev.session_id) {
+          root.streamingSessionId = ev.session_id
+          if (!root.selectedSessionId) {
+            root.selectedSessionId = ev.session_id
+          }
         }
       } else if (ev.type === "delta") {
         root.currentStreamingContent += ev.content
@@ -295,27 +300,52 @@ Panel {
         root.currentToolEvents = tools
       } else if (ev.type === "done") {
         root.isStreaming = false
-        var finalMsgs = root.messages.slice()
-        finalMsgs.push({
-          role: "assistant",
-          content: ev.full_text || root.currentStreamingContent,
-          timestamp: new Date().toISOString(),
-          tool_events: root.currentToolEvents.slice()
-        })
-        root.messages = finalMsgs
+        var targetSessionId = ev.session_id || root.streamingSessionId || root.selectedSessionId
+        var replyText = ev.full_text || root.currentStreamingContent
+
+        if (root.selectedSessionId === targetSessionId) {
+          var finalMsgs = root.messages.slice()
+          finalMsgs.push({
+            role: "assistant",
+            content: replyText,
+            timestamp: new Date().toISOString(),
+            tool_events: root.currentToolEvents.slice()
+          })
+          root.messages = finalMsgs
+        }
+
         root.currentStreamingContent = ""
         root.currentToolEvents = []
+        root.streamingSessionId = ""
         root.refreshSessions()
+
+        var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
+        if (!isCurrentlyViewing) {
+          root.postCompletionNotification(replyText, false, targetSessionId)
+        }
       } else if (ev.type === "error") {
         root.isStreaming = false
+        var targetSessionId = ev.session_id || root.streamingSessionId || root.selectedSessionId
         root.statusError = ev.error
-        var errMsgs = root.messages.slice()
-        errMsgs.push({
-          role: "assistant",
-          content: "⚠️ Error: " + ev.error,
-          timestamp: new Date().toISOString()
-        })
-        root.messages = errMsgs
+
+        if (root.selectedSessionId === targetSessionId) {
+          var errMsgs = root.messages.slice()
+          errMsgs.push({
+            role: "assistant",
+            content: "⚠️ Error: " + ev.error,
+            timestamp: new Date().toISOString()
+          })
+          root.messages = errMsgs
+        }
+
+        root.currentStreamingContent = ""
+        root.currentToolEvents = []
+        root.streamingSessionId = ""
+
+        var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
+        if (!isCurrentlyViewing) {
+          root.postCompletionNotification(ev.error, true, targetSessionId)
+        }
       }
     } catch (e) {
       // Partial chunk
@@ -329,16 +359,20 @@ Panel {
     if (streamChatProc.running) {
       streamChatProc.running = false
     }
+    var wasTargetSession = (selectedSessionId === streamingSessionId || !streamingSessionId)
     isStreaming = false
+    streamingSessionId = ""
     if (currentStreamingContent) {
-      var updated = messages.slice()
-      updated.push({
-        role: "assistant",
-        content: currentStreamingContent,
-        timestamp: new Date().toISOString(),
-        tool_events: currentToolEvents.slice()
-      })
-      messages = updated
+      if (wasTargetSession) {
+        var updated = messages.slice()
+        updated.push({
+          role: "assistant",
+          content: currentStreamingContent,
+          timestamp: new Date().toISOString(),
+          tool_events: currentToolEvents.slice()
+        })
+        messages = updated
+      }
       currentStreamingContent = ""
       currentToolEvents = []
     }
@@ -375,6 +409,102 @@ Panel {
       return Qt.formatTime(d, "hh:mm AP")
     } catch (e) {
       return ""
+    }
+  }
+
+  function postCompletionNotification(content, isError, sessionId) {
+    var notifyOnComp = root.setting("notifyOnComplete", true)
+    var notifyOnErr = root.setting("notifyOnError", true)
+
+    if (isError) {
+      if (!notifyOnErr) {
+        console.log("hermes-bridge/notify: skipped due to notifyOnError=false")
+        return
+      }
+    } else {
+      if (!notifyOnComp) {
+        console.log("hermes-bridge/notify: skipped due to notifyOnComplete=false")
+        return
+      }
+    }
+
+    var targetId = sessionId || root.selectedSessionId || ""
+    var targetTitle = ""
+    for (var i = 0; i < root.sessions.length; i++) {
+      if (root.sessions[i].id === targetId) {
+        targetTitle = root.sessions[i].title
+        break
+      }
+    }
+    if (!targetTitle) {
+      targetTitle = (root.selectedSessionId === targetId ? root.activeSessionTitle : "") || "Hermes Agent"
+    }
+
+    var title = isError ? (targetTitle + " - Error") : targetTitle
+
+    // Format a concise preview by cleaning markdown syntax
+    var preview = String(content || "").trim()
+    preview = preview.replace(/```[\s\S]*?```/g, "[Code]")
+    preview = preview.replace(/`([^`]+)`/g, "$1")
+    preview = preview.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    preview = preview.replace(/[*_~>#]/g, "")
+    preview = preview.replace(/\s+/g, " ").trim()
+
+    if (preview.length > 140) {
+      preview = preview.slice(0, 137) + "..."
+    }
+    if (!preview) {
+      preview = isError ? "An error occurred." : "Response completed."
+    }
+
+    var glyph = isError ? "\u{f015a}" : root.setting("icon", "\u{f06d3}")
+    var urgency = isError ? "critical" : "normal"
+
+    var execCmd = ["quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call", "com.mwhuss.omarchy-hermes-api", "openSession", targetId]
+
+    var bashArgs = [
+      "bash", "-lc",
+      'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
+      '  omarchy-notification-send --app-name "Hermes Agent" -u "$1" -g "$2" "$3" "$4" --exec "${@:5}"; ' +
+      'else ' +
+      '  notify-send -a "Hermes Agent" -u "$1" "$3" "$4"; ' +
+      'fi',
+      "bash",
+      urgency,
+      glyph,
+      title,
+      preview
+    ].concat(execCmd)
+
+    console.log("hermes-bridge/notify: dispatching notification: " + title + " -> " + preview + " (sessionId=" + targetId + ")")
+    Quickshell.execDetached(bashArgs)
+  }
+
+  IpcHandler {
+    target: "com.mwhuss.omarchy-hermes-api"
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function openSession(sessionId: string): string {
+      root.open()
+      if (sessionId && String(sessionId).trim() !== "") {
+        var cleanId = String(sessionId).trim()
+        if (root.selectedSessionId !== cleanId) {
+          root.selectSession(cleanId)
+        } else {
+          if (!getSessionProc.running) {
+            getSessionProc.command = ["node", root.scriptPath, "get-session", cleanId]
+            getSessionProc.running = true
+          }
+        }
+      }
+      return "ok"
+    }
+    function testNotify(): string {
+      root.postCompletionNotification("Test response from Hermes Agent", false, root.selectedSessionId)
+      return "ok"
     }
   }
 
@@ -480,15 +610,22 @@ Panel {
     }
     onExited: function(exitCode) {
       if (root.isStreaming) {
+        var targetSessionId = root.streamingSessionId || root.selectedSessionId
         if (exitCode !== 0 && !root.currentStreamingContent) {
           var errText = String(streamStderr.text || "").trim() || "Bridge process error (code " + exitCode + ")"
-          var msgs = root.messages.slice()
-          msgs.push({
-            role: "assistant",
-            content: "⚠️ " + errText,
-            timestamp: new Date().toISOString()
-          })
-          root.messages = msgs
+          if (root.selectedSessionId === targetSessionId) {
+            var msgs = root.messages.slice()
+            msgs.push({
+              role: "assistant",
+              content: "⚠️ " + errText,
+              timestamp: new Date().toISOString()
+            })
+            root.messages = msgs
+          }
+          var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
+          if (!isCurrentlyViewing) {
+            root.postCompletionNotification(errText, true, targetSessionId)
+          }
         }
         root.cancelStreaming()
       }
@@ -817,14 +954,27 @@ Panel {
                       Layout.fillWidth: true
                       spacing: 2
 
-                      Text {
-                        text: sessionDelegate.confirmingDelete ? "Delete this session?" : (modelData.title || "Untitled Session")
-                        font.family: root.fontFamily
-                        font.pixelSize: 11
-                        font.weight: sessionDelegate.confirmingDelete ? Font.DemiBold : Font.Medium
-                        color: sessionDelegate.confirmingDelete ? "#EF4444" : root.foreground
-                        elide: Text.ElideRight
+                      RowLayout {
                         Layout.fillWidth: true
+                        spacing: 4
+
+                        Text {
+                          text: sessionDelegate.confirmingDelete ? "Delete this session?" : (modelData.title || "Untitled Session")
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          font.weight: sessionDelegate.confirmingDelete ? Font.DemiBold : Font.Medium
+                          color: sessionDelegate.confirmingDelete ? "#EF4444" : root.foreground
+                          elide: Text.ElideRight
+                          Layout.fillWidth: true
+                        }
+
+                        Text {
+                          text: "●"
+                          font.family: root.fontFamily
+                          font.pixelSize: 8
+                          color: "#10B981"
+                          visible: !sessionDelegate.confirmingDelete && root.isStreaming && root.streamingSessionId === modelData.id
+                        }
                       }
 
                       RowLayout {
@@ -1595,7 +1745,7 @@ Panel {
                 Item {
                   Layout.fillWidth: true
                   implicitHeight: streamCol.implicitHeight + 8
-                  visible: root.isStreaming
+                  visible: root.isStreaming && (root.selectedSessionId === root.streamingSessionId || !root.streamingSessionId)
 
                   ColumnLayout {
                     id: streamCol
@@ -1661,7 +1811,7 @@ Panel {
                           color: root.accent
 
                           SequentialAnimation on opacity {
-                            running: root.isStreaming && !root.currentStreamingContent
+                            running: root.isStreaming && (root.selectedSessionId === root.streamingSessionId || !root.streamingSessionId) && !root.currentStreamingContent
                             loops: Animation.Infinite
                             NumberAnimation { from: 0.2; to: 1.0; duration: 400 }
                             NumberAnimation { from: 1.0; to: 0.2; duration: 400 }

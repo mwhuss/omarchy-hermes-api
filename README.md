@@ -18,6 +18,7 @@ Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweigh
   - Automatic loading of the most recent active session.
 - **Rich Markdown Chat**: Formatted Markdown rendering in assistant responses with clickable links and syntax styling.
 - **Custom System Prompts**: Expandable per-session system prompt configuration directly from the empty chat view.
+- **Desktop Completion Notifications**: Interactive desktop notifications dispatched when Hermes finishes a response or encounters an error, featuring click-to-open IPC action to reopen the chat flyout.
 - **Zero-Config Auto-Discovery**: Automatically discovers local Hermes Agent server credentials from environment variables or `~/.hermes/.env`.
 
 ---
@@ -93,11 +94,13 @@ npm test
 ```
 
 This verifies:
+- Manifest schema validation & default settings
 - Server connection & status check (`status`)
 - Session listing & normalization (`list-sessions`)
 - Session detail & message fetching (`get-session`)
 - Inline session renaming (`rename-session`)
 - Live NDJSON chat streaming (`stream-chat`)
+- Chat streaming with desktop completion notifications (`--notify`)
 
 ---
 
