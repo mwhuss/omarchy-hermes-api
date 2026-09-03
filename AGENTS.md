@@ -14,6 +14,16 @@ Canonical five-role labels (`needs-triage`, `needs-info`, `ready-for-agent`, `re
 
 Single-context layout (`CONTEXT.md` + `docs/adr/`). See `docs/agents/domain.md`.
 
+### Plugin reload & cache flushing
+
+Quickshell caches compiled QML components in memory. `omarchy-shell shell reloadConfig` only reloads themes/settings and does not pick up modified QML components.
+
+Whenever testing or reloading plugin UI changes, always flush the cache and restart the shell by running:
+
+```bash
+omarchy-restart-shell
+```
+
 ## Behavioral guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.

@@ -16,6 +16,7 @@ Panel {
   property bool isStreaming: false
   property bool isRefreshing: false
   property bool isEditingTitle: false
+  property bool isConfirmingDeleteSession: false
   property bool showSystemPromptInput: false
   property string sessionSystemPrompt: ""
   property string serverUrl: ""
@@ -30,6 +31,7 @@ Panel {
   property string searchQuery: ""
   property bool omarchyOnly: false
   property string streamingSessionId: ""
+  property bool hasSelectedInitialSession: false
 
   // Active chat state
   property var messages: []
@@ -88,6 +90,13 @@ Panel {
     onTriggered: root.isRefreshing = false
   }
 
+  Timer {
+    id: headerDeleteConfirmTimer
+    interval: 5000
+    running: root.isConfirmingDeleteSession
+    onTriggered: root.isConfirmingDeleteSession = false
+  }
+
   function triggerRefresh() {
     root.isRefreshing = true
     refreshAnimationTimer.restart()
@@ -100,6 +109,7 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
+      root.isConfirmingDeleteSession = false
       triggerRefresh()
       Qt.callLater(function() {
         if (promptInput) promptInput.forceActiveFocus()
@@ -140,7 +150,8 @@ Panel {
       var res = JSON.parse(String(text).trim())
       if (res.success && Array.isArray(res.sessions)) {
         root.sessions = res.sessions
-        if (!root.selectedSessionId && res.sessions.length > 0) {
+        if (!root.hasSelectedInitialSession && res.sessions.length > 0) {
+          root.hasSelectedInitialSession = true
           root.selectSession(res.sessions[0].id)
         }
       }
@@ -150,8 +161,10 @@ Panel {
   }
 
   function selectSession(sessionId) {
+    root.hasSelectedInitialSession = true
     if (selectedSessionId === sessionId) return
     isEditingTitle = false
+    isConfirmingDeleteSession = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
     promptDraft = ""
@@ -219,8 +232,10 @@ Panel {
   }
 
   function startNewSession() {
+    root.hasSelectedInitialSession = true
     if (isStreaming) cancelStreaming()
     isEditingTitle = false
+    isConfirmingDeleteSession = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
     selectedSessionId = ""
@@ -270,10 +285,15 @@ Panel {
   }
 
   function deleteSession(sessionId) {
+    if (root.isStreaming && (root.streamingSessionId === sessionId || root.selectedSessionId === sessionId)) {
+      root.cancelStreaming()
+    }
+    isConfirmingDeleteSession = false
+    var remaining = sessions.filter(function(s) { return s.id !== sessionId })
+    sessions = remaining
     if (selectedSessionId === sessionId) {
       startNewSession()
     }
-    sessions = sessions.filter(function(s) { return s.id !== sessionId })
     deleteSessionProc.command = ["node", root.scriptPath, "delete-session", sessionId]
     deleteSessionProc.running = true
   }
@@ -787,7 +807,15 @@ Panel {
           if (promptInput) promptInput.forceActiveFocus()
         }
       }
-      onCloseRequested: root.close()
+      onCloseRequested: {
+        if (root.isConfirmingDeleteSession) {
+          root.isConfirmingDeleteSession = false
+        } else if (root.isEditingTitle) {
+          root.isEditingTitle = false
+        } else {
+          root.close()
+        }
+      }
 
       ColumnLayout {
         anchors.fill: parent
@@ -983,37 +1011,20 @@ Panel {
 
                 delegate: Rectangle {
                   id: sessionDelegate
-                  property bool confirmingDelete: false
                   width: sessionListView.width
                   height: 50
                   radius: 6
                   color: root.selectedSessionId === modelData.id
                     ? root.cardHover
                     : (delegateMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
-                  border.color: sessionDelegate.confirmingDelete
-                    ? "#EF4444"
-                    : (root.selectedSessionId === modelData.id ? root.accent : "transparent")
-
-                  // Auto-cancel confirmation timer if left unclicked for 4 seconds
-                  Timer {
-                    id: confirmTimer
-                    interval: 4000
-                    running: sessionDelegate.confirmingDelete
-                    onTriggered: sessionDelegate.confirmingDelete = false
-                  }
+                  border.color: root.selectedSessionId === modelData.id ? root.accent : "transparent"
 
                   MouseArea {
                     id: delegateMouse
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                      if (sessionDelegate.confirmingDelete) {
-                        sessionDelegate.confirmingDelete = false
-                      } else {
-                        root.selectSession(modelData.id)
-                      }
-                    }
+                    onClicked: root.selectSession(modelData.id)
                   }
 
                   RowLayout {
@@ -1025,32 +1036,18 @@ Panel {
                       Layout.fillWidth: true
                       spacing: 2
 
-                      RowLayout {
+                      Text {
+                        text: modelData.title || "Untitled Session"
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        font.weight: Font.Medium
+                        color: root.foreground
+                        elide: Text.ElideRight
                         Layout.fillWidth: true
-                        spacing: 4
-
-                        Text {
-                          text: sessionDelegate.confirmingDelete ? "Delete this session?" : (modelData.title || "Untitled Session")
-                          font.family: root.fontFamily
-                          font.pixelSize: 11
-                          font.weight: sessionDelegate.confirmingDelete ? Font.DemiBold : Font.Medium
-                          color: sessionDelegate.confirmingDelete ? "#EF4444" : root.foreground
-                          elide: Text.ElideRight
-                          Layout.fillWidth: true
-                        }
-
-                        Text {
-                          text: "●"
-                          font.family: root.fontFamily
-                          font.pixelSize: 8
-                          color: "#10B981"
-                          visible: !sessionDelegate.confirmingDelete && root.isStreaming && root.streamingSessionId === modelData.id
-                        }
                       }
 
                       RowLayout {
                         spacing: 4
-                        visible: !sessionDelegate.confirmingDelete
                         Text {
                           text: modelData.source || "hermes"
                           font.family: root.fontFamily
@@ -1066,84 +1063,25 @@ Panel {
                       }
                     }
 
-                    // Normal state: Trash icon button
-                    Rectangle {
-                      visible: !sessionDelegate.confirmingDelete && (delegateMouse.containsMouse || root.selectedSessionId === modelData.id)
-                      width: 22
-                      height: 22
-                      radius: 4
-                      color: delMouse.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent"
+                    // Trailing status slot for in-progress streaming dot
+                    Item {
+                      width: 20
+                      Layout.fillHeight: true
 
-                      MouseArea {
-                        id: delMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: sessionDelegate.confirmingDelete = true
-                      }
-
-                      Text {
+                      Rectangle {
+                        id: sessionProgressDot
+                        width: 6
+                        height: 6
+                        radius: 3
                         anchors.centerIn: parent
-                        text: "\uF1F8" // Trash icon
-                        font.family: root.fontFamily
-                        font.pixelSize: 10
-                        color: delMouse.containsMouse ? "#EF4444" : root.dimText
-                      }
-                    }
+                        color: "#10B981"
+                        visible: root.isStreaming && root.streamingSessionId === modelData.id
 
-                    // Confirm state: Checkmark (Confirm) and Cross (Cancel) buttons
-                    RowLayout {
-                      visible: sessionDelegate.confirmingDelete
-                      spacing: 4
-
-                      // Confirm delete button
-                      Rectangle {
-                        width: 22
-                        height: 22
-                        radius: 4
-                        color: confirmDelMouse.containsMouse ? "#EF4444" : Qt.rgba(239/255, 68/255, 68/255, 0.2)
-
-                        MouseArea {
-                          id: confirmDelMouse
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: {
-                            sessionDelegate.confirmingDelete = false
-                            root.deleteSession(modelData.id)
-                          }
-                        }
-
-                        Text {
-                          anchors.centerIn: parent
-                          text: "\uF00C" // Checkmark
-                          font.family: root.fontFamily
-                          font.pixelSize: 10
-                          color: confirmDelMouse.containsMouse ? "#FFFFFF" : "#EF4444"
-                        }
-                      }
-
-                      // Cancel delete button
-                      Rectangle {
-                        width: 22
-                        height: 22
-                        radius: 4
-                        color: cancelDelMouse.containsMouse ? root.cardHover : "transparent"
-
-                        MouseArea {
-                          id: cancelDelMouse
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: sessionDelegate.confirmingDelete = false
-                        }
-
-                        Text {
-                          anchors.centerIn: parent
-                          text: "\uF00D" // Times / Cross
-                          font.family: root.fontFamily
-                          font.pixelSize: 10
-                          color: root.dimText
+                        SequentialAnimation on opacity {
+                          running: sessionProgressDot.visible
+                          loops: Animation.Infinite
+                          NumberAnimation { from: 0.3; to: 1.0; duration: 500 }
+                          NumberAnimation { from: 1.0; to: 0.3; duration: 500 }
                         }
                       }
                     }
@@ -1188,7 +1126,7 @@ Panel {
 
                 // When viewing title
                 Item {
-                  visible: !root.isEditingTitle
+                  visible: !root.isEditingTitle && !root.isConfirmingDeleteSession
                   Layout.fillWidth: true
                   Layout.fillHeight: true
 
@@ -1220,6 +1158,7 @@ Panel {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
+                          root.isConfirmingDeleteSession = false
                           root.isEditingTitle = true
                           editTitleInput.text = root.activeSessionTitle
                           Qt.callLater(function() {
@@ -1235,6 +1174,110 @@ Panel {
                         font.family: root.fontFamily
                         font.pixelSize: 10
                         color: editHover.containsMouse ? root.accent : root.dimText
+                      }
+                    }
+
+                    // Delete session icon button
+                    Rectangle {
+                      visible: !!root.selectedSessionId
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: headerDelHover.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent"
+
+                      MouseArea {
+                        id: headerDelHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.isEditingTitle = false
+                          root.isConfirmingDeleteSession = true
+                        }
+                      }
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: "\uF1F8" // Trash icon
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: headerDelHover.containsMouse ? "#EF4444" : root.dimText
+                      }
+                    }
+                  }
+                }
+
+                // When confirming session deletion
+                Item {
+                  visible: root.isConfirmingDeleteSession && !root.isEditingTitle
+                  Layout.fillWidth: true
+                  Layout.fillHeight: true
+
+                  RowLayout {
+                    anchors.fill: parent
+                    spacing: 6
+
+                    Text {
+                      text: "Delete this session?"
+                      font.family: root.fontFamily
+                      font.pixelSize: 11
+                      font.weight: Font.DemiBold
+                      color: "#EF4444"
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+
+                    // Confirm Delete Checkmark button
+                    Rectangle {
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: confirmDelHeaderHover.containsMouse ? "#EF4444" : Qt.rgba(239/255, 68/255, 68/255, 0.2)
+
+                      MouseArea {
+                        id: confirmDelHeaderHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          var targetId = root.selectedSessionId
+                          root.isConfirmingDeleteSession = false
+                          if (targetId) {
+                            root.deleteSession(targetId)
+                          }
+                        }
+                      }
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: "\uF00C" // Checkmark
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: confirmDelHeaderHover.containsMouse ? "#FFFFFF" : "#EF4444"
+                      }
+                    }
+
+                    // Cancel Delete Cross button
+                    Rectangle {
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: cancelDelHeaderHover.containsMouse ? root.cardHover : "transparent"
+
+                      MouseArea {
+                        id: cancelDelHeaderHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.isConfirmingDeleteSession = false
+                      }
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: "\uF00D" // Times / Cross
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: root.dimText
                       }
                     }
                   }
@@ -1962,7 +2005,13 @@ Panel {
                           event.accepted = true
                         }
                       } else if (event.key === Qt.Key_Escape) {
-                        root.close()
+                        if (root.isConfirmingDeleteSession) {
+                          root.isConfirmingDeleteSession = false
+                        } else if (root.isEditingTitle) {
+                          root.isEditingTitle = false
+                        } else {
+                          root.close()
+                        }
                         event.accepted = true
                       }
                     }

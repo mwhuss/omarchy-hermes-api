@@ -5,6 +5,7 @@
   "main": "bin/hermes-bridge.js",
   "scripts": {
     "test": "node test/test-bridge.js",
+    "reload": "omarchy-restart-shell",
     "install-plugin": "bash bin/install.sh"
   },
   "keywords": [
