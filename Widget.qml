@@ -36,6 +36,28 @@ Panel {
   property string currentStreamingContent: ""
   property var currentToolEvents: []
 
+  // Prompt history & draft state (scoped per session from active messages)
+  function getCurrentSessionHistory() {
+    var out = []
+    for (var i = 0; i < root.messages.length; i++) {
+      var m = root.messages[i]
+      if (m && m.role === "user" && typeof m.content === "string") {
+        var str = m.content.trim()
+        if (str && (out.length === 0 || out[out.length - 1] !== str)) {
+          out.push(str)
+        }
+      }
+    }
+    if (out.length > 50) {
+      out = out.slice(out.length - 50)
+    }
+    return out
+  }
+
+  readonly property var promptHistory: getCurrentSessionHistory()
+  property string promptDraft: ""
+  property int promptHistoryIndex: -1
+
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color background: Color.popups.background
   readonly property color border: Color.popups.border
@@ -132,6 +154,9 @@ Panel {
     isEditingTitle = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
+    promptDraft = ""
+    promptHistoryIndex = -1
+    if (promptInput) promptInput.text = ""
     selectedSessionId = sessionId
     
     for (var i = 0; i < sessions.length; i++) {
@@ -203,12 +228,45 @@ Panel {
     messages = []
     currentStreamingContent = ""
     currentToolEvents = []
+    promptDraft = ""
+    promptHistoryIndex = -1
     Qt.callLater(function() {
       if (promptInput) {
         promptInput.text = ""
         promptInput.forceActiveFocus()
       }
     })
+  }
+
+  function navigatePromptHistory(goBack) {
+    if (!promptInput || root.promptHistory.length === 0) return false
+
+    if (goBack) {
+      if (root.promptHistoryIndex === -1) {
+        root.promptDraft = promptInput.text
+        root.promptHistoryIndex = root.promptHistory.length - 1
+      } else if (root.promptHistoryIndex > 0) {
+        root.promptHistoryIndex--
+      } else {
+        return true
+      }
+      promptInput.text = root.promptHistory[root.promptHistoryIndex]
+      promptInput.cursorPosition = promptInput.text.length
+      return true
+    } else {
+      if (root.promptHistoryIndex === -1) {
+        return true
+      } else if (root.promptHistoryIndex < root.promptHistory.length - 1) {
+        root.promptHistoryIndex++
+        promptInput.text = root.promptHistory[root.promptHistoryIndex]
+        promptInput.cursorPosition = promptInput.text.length
+      } else {
+        root.promptHistoryIndex = -1
+        promptInput.text = root.promptDraft
+        promptInput.cursorPosition = promptInput.text.length
+      }
+      return true
+    }
   }
 
   function deleteSession(sessionId) {
@@ -224,6 +282,9 @@ Panel {
     if (!promptInput) return
     var text = String(promptInput.text || "").trim()
     if (!text || isStreaming) return
+
+    root.promptDraft = ""
+    root.promptHistoryIndex = -1
 
     promptInput.text = ""
     currentStreamingContent = ""
@@ -716,6 +777,16 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: Boolean(promptInput && promptInput.activeFocus)
+      onMoveRequested: function(dx, dy) {
+        if (dy < 0) {
+          root.navigatePromptHistory(true)
+          if (promptInput) promptInput.forceActiveFocus()
+        } else if (dy > 0) {
+          root.navigatePromptHistory(false)
+          if (promptInput) promptInput.forceActiveFocus()
+        }
+      }
       onCloseRequested: root.close()
 
       ColumnLayout {
@@ -1878,7 +1949,23 @@ Panel {
                     font.pixelSize: 11
                     color: root.foreground
                     clip: true
+                    focus: true
                     onAccepted: root.sendCurrentMessage()
+
+                    Keys.onPressed: function(event) {
+                      if (event.key === Qt.Key_Up) {
+                        if (root.navigatePromptHistory(true)) {
+                          event.accepted = true
+                        }
+                      } else if (event.key === Qt.Key_Down) {
+                        if (root.navigatePromptHistory(false)) {
+                          event.accepted = true
+                        }
+                      } else if (event.key === Qt.Key_Escape) {
+                        root.close()
+                        event.accepted = true
+                      }
+                    }
 
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
