@@ -19,6 +19,6 @@
   "author": "mwhuss",
   "license": "MIT",
   "dependencies": {
-    "openai": "^4.86.1"
+    "openai": "^7.10.0"
   }
 }
