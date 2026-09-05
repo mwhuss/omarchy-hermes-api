@@ -4,15 +4,18 @@ A native [Omarchy](https://github.com/omarchy) menu bar plugin and flyout interf
 
 Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweight Node.js stdio bridge.
 
-![Hermes Agent Panel](docs/assets/screenshot.png)
+![Hermes Agent Panel](preview.png)
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-npm install openai
-omarchy plugin install https://github.com/mwhuss/omarchy-hermes-api.git --enable
+# 1. Add the plugin to Omarchy Shell
+omarchy plugin add https://github.com/mwhuss/omarchy-hermes-api.git --enable
+
+# 2. Install bridge dependencies
+cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm install --production
 ```
 
 Only needed for remote Hermes instances (see [Configuration](#️-configuration) section below for details):
@@ -96,6 +99,20 @@ The bridge automatically discovers server configuration in the following order o
    ```bash
    omarchy-restart-shell
    ```
+
+---
+
+## 🗑️ Removal
+
+To disable or completely remove the plugin:
+
+```bash
+# Temporarily disable the widget
+omarchy plugin disable com.mwhuss.omarchy-hermes-api
+
+# Completely remove the plugin and its files
+omarchy plugin remove com.mwhuss.omarchy-hermes-api
+```
 
 ---
 
