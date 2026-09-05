@@ -4,6 +4,24 @@ A native [Omarchy](https://github.com/omarchy) menu bar plugin and flyout interf
 
 Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweight Node.js stdio bridge.
 
+![Hermes Agent Panel](docs/assets/screenshot.png)
+
+---
+
+## 🚀 Quick Start
+
+```bash
+npm install openai
+omarchy plugin install https://github.com/mwhuss/omarchy-hermes-api.git --enable
+```
+
+Only needed for remote Hermes instances (see [Configuration](#️-configuration) section below for details):
+
+```bash
+echo 'export HERMES_API_SERVER_URL="http://<remote-host>:8642"' >> ~/.bashrc
+echo 'export HERMES_API_SERVER_KEY="<key>"' >> ~/.bashrc
+```
+
 ---
 
 ## ✨ Features
@@ -23,15 +41,27 @@ Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweigh
 
 ---
 
-## 📋 Prerequisites
+## ⚙️ Configuration
 
-- **Linux** running **Omarchy Desktop** with **Quickshell**
-- **Node.js** (v18.0.0 or newer) and **npm**
-- A running **Hermes Agent API server** (e.g. `hermes serve` listening on port `8642` or custom URL)
+The bridge automatically discovers server configuration in the following order of priority:
+
+1. **Environment Variables**:
+   - `HERMES_API_SERVER_URL` (e.g. `http://127.0.0.1:8642`)
+   - `HERMES_API_SERVER_KEY` (API authentication key)
+   - `HERMES_API_SERVER_PORT` (Port override, defaults to `8642`)
+
+2. **Local Hermes Config File (`~/.hermes/.env`)**:
+   - `API_SERVER_URL`
+   - `API_SERVER_KEY`
+   - `API_SERVER_PORT` or `PORT`
+
+3. **Default Fallback**:
+   - URL: `http://127.0.0.1:8642/v1`
+   - Key: `dummy-key` (standard for local unauthenticated servers)
 
 ---
 
-## 🚀 Installation
+## 🛠️ Manual Installation
 
 1. **Clone the repository:**
    ```bash
@@ -61,27 +91,11 @@ Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweigh
    }
    ```
 
-4. **Restart Omarchy Shell** or reload your bar widgets to load the plugin.
-
----
-
-## ⚙️ Configuration
-
-The bridge automatically discovers server configuration in the following order of priority:
-
-1. **Environment Variables**:
-   - `HERMES_API_SERVER_URL` (e.g. `http://127.0.0.1:8642`)
-   - `HERMES_API_SERVER_KEY` (API authentication key)
-   - `HERMES_API_SERVER_PORT` (Port override, defaults to `8642`)
-
-2. **Local Hermes Config File (`~/.hermes/.env`)**:
-   - `API_SERVER_URL`
-   - `API_SERVER_KEY`
-   - `API_SERVER_PORT` or `PORT`
-
-3. **Default Fallback**:
-   - URL: `http://127.0.0.1:8642/v1`
-   - Key: `dummy-key` (standard for local unauthenticated servers)
+4. **Restart Omarchy Shell:**
+   Flush the QML component cache and restart the shell:
+   ```bash
+   omarchy-restart-shell
+   ```
 
 ---
 
