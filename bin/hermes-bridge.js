@@ -69,12 +69,14 @@ function resolveConfig() {
   let baseUrl = `${rootUrl}/v1`;
 
   const apiKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || 'dummy-key';
+  const serverName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
 
   return {
     rootUrl,
     baseUrl,
     port: parseInt(parsedUrl.port || defaultPort, 10),
     apiKey,
+    serverName,
   };
 }
 
@@ -102,7 +104,8 @@ async function handleStatus() {
         connected: true,
         rootUrl: config.rootUrl,
         baseUrl: config.baseUrl,
-        models: models.length ? models : ['hermes-agent']
+        models: models.length ? models : ['hermes-agent'],
+        serverName: config.serverName
       }));
     } else {
       console.log(JSON.stringify({
@@ -110,7 +113,8 @@ async function handleStatus() {
         connected: false,
         statusCode: res.status,
         baseUrl: config.baseUrl,
-        error: `Server returned HTTP ${res.status}`
+        error: `Server returned HTTP ${res.status}`,
+        serverName: config.serverName
       }));
     }
   } catch (err) {
@@ -118,7 +122,8 @@ async function handleStatus() {
       success: false,
       connected: false,
       baseUrl: config.baseUrl,
-      error: err.message
+      error: err.message,
+      serverName: config.serverName
     }));
   }
 }
@@ -400,13 +405,13 @@ function sendDesktopNotification(title, message, isError = false) {
   const glyph = isError ? '\u{f015a}' : '\u{f06d3}';
 
   const script = 'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
-    '  omarchy-notification-send --app-name "Hermes Agent" -u "$1" -g "$2" "$3" "$4"; ' +
+    '  omarchy-notification-send --app-name "$1" -u "$2" -g "$3" "$4" "$5"; ' +
     'else ' +
-    '  notify-send -a "Hermes Agent" -u "$1" "$3" "$4"; ' +
+    '  notify-send -a "$1" -u "$2" "$4" "$5"; ' +
     'fi';
 
   try {
-    const child = spawn('bash', ['-lc', script, 'bash', urgency, glyph, title, cleanMsg], {
+    const child = spawn('bash', ['-lc', script, 'bash', config.serverName, urgency, glyph, title, cleanMsg], {
       detached: true,
       stdio: 'ignore'
     });
@@ -521,7 +526,7 @@ async function handleStreamChat(options) {
     }) + '\n');
 
     if (notify) {
-      sendDesktopNotification('Hermes Agent', fullText, false);
+      sendDesktopNotification(config.serverName, fullText, false);
     }
   } catch (err) {
     process.stdout.write(JSON.stringify({
@@ -530,7 +535,7 @@ async function handleStreamChat(options) {
     }) + '\n');
 
     if (notify) {
-      sendDesktopNotification('Hermes Agent - Error', err.message, true);
+      sendDesktopNotification(`${config.serverName} - Error`, err.message, true);
     }
   }
 }

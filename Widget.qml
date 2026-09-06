@@ -21,6 +21,7 @@ Panel {
   property string sessionSystemPrompt: ""
   property string serverUrl: ""
   property string statusError: ""
+  property string serverName: (typeof Quickshell !== "undefined" && typeof Quickshell.env === "function" && Quickshell.env("HERMES_API_SERVER_NAME")) || "Hermes"
 
   // Session state
   property var sessions: []
@@ -131,6 +132,9 @@ Panel {
       root.serverUrl = res.baseUrl || ""
       if (res.models && res.models.length > 0) {
         root.currentModel = res.models[0]
+      }
+      if (res.serverName && String(res.serverName).trim()) {
+        root.serverName = String(res.serverName).trim()
       }
       root.statusError = res.error || ""
     } catch (e) {
@@ -518,7 +522,7 @@ Panel {
       }
     }
     if (!targetTitle) {
-      targetTitle = (root.selectedSessionId === targetId ? root.activeSessionTitle : "") || "Hermes Agent"
+      targetTitle = (root.selectedSessionId === targetId ? root.activeSessionTitle : "") || root.serverName
     }
 
     var title = isError ? (targetTitle + " - Error") : targetTitle
@@ -546,11 +550,12 @@ Panel {
     var bashArgs = [
       "bash", "-lc",
       'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
-      '  omarchy-notification-send --app-name "Hermes Agent" -u "$1" -g "$2" "$3" "$4" --exec "${@:5}"; ' +
+      '  omarchy-notification-send --app-name "$1" -u "$2" -g "$3" "$4" "$5" --exec "${@:6}"; ' +
       'else ' +
-      '  notify-send -a "Hermes Agent" -u "$1" "$3" "$4"; ' +
+      '  notify-send -a "$1" -u "$2" "$4" "$5"; ' +
       'fi',
       "bash",
+      root.serverName,
       urgency,
       glyph,
       title,
@@ -584,7 +589,7 @@ Panel {
       return "ok"
     }
     function testNotify(): string {
-      root.postCompletionNotification("Test response from Hermes Agent", false, root.selectedSessionId)
+      root.postCompletionNotification("Test response from " + root.serverName, false, root.selectedSessionId)
       return "ok"
     }
   }
@@ -735,7 +740,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: root.isConnected ? "Hermes Agent (Live)" : "Hermes Agent (Offline)"
+    tooltipText: root.isConnected ? (root.serverName + " (Live)") : (root.serverName + " (Offline)")
 
     iconComponent: Component {
       Item {
@@ -841,7 +846,7 @@ Panel {
             }
 
             Text {
-              text: "Hermes Agent"
+              text: root.serverName
               font.family: root.fontFamily
               font.pixelSize: 14
               font.weight: Font.Bold
@@ -1418,7 +1423,7 @@ Panel {
                     }
 
                     Text {
-                      text: "How can Hermes help you today?"
+                      text: "How can " + root.serverName + " help you today?"
                       font.family: root.fontFamily
                       font.pixelSize: 14
                       font.weight: Font.DemiBold
@@ -1933,7 +1938,7 @@ Panel {
                         }
 
                         Text {
-                          text: "Hermes is thinking..."
+                          text: root.serverName + " is thinking..."
                           font.family: root.fontFamily
                           font.pixelSize: 11
                           color: root.dimText
@@ -2019,7 +2024,7 @@ Panel {
                     Text {
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
-                      text: "Ask Hermes a question or assign a task..."
+                      text: "Ask " + root.serverName + " a question or assign a task..."
                       font.family: root.fontFamily
                       font.pixelSize: 11
                       color: root.dimText

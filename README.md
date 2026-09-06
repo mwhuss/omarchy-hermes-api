@@ -18,11 +18,13 @@ omarchy plugin add https://github.com/mwhuss/omarchy-hermes-api.git --enable
 cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm install --production
 ```
 
-Only needed for remote Hermes instances (see [Configuration](#️-configuration) section below for details):
+Only needed for remote Hermes instances or custom configuration (see [Configuration](#️-configuration) section below for details):
 
 ```bash
 echo 'export HERMES_API_SERVER_URL="http://<remote-host>:8642"' >> ~/.bashrc
 echo 'export HERMES_API_SERVER_KEY="<key>"' >> ~/.bashrc
+# Optional: customize server display name (defaults to "Hermes")
+echo 'export HERMES_API_SERVER_NAME="Hermes"' >> ~/.bashrc
 ```
 
 ---
@@ -52,15 +54,18 @@ The bridge automatically discovers server configuration in the following order o
    - `HERMES_API_SERVER_URL` (e.g. `http://127.0.0.1:8642`)
    - `HERMES_API_SERVER_KEY` (API authentication key)
    - `HERMES_API_SERVER_PORT` (Port override, defaults to `8642`)
+   - `HERMES_API_SERVER_NAME` (Optional display name override across UI, tooltip, and notifications; defaults to `Hermes`)
 
 2. **Local Hermes Config File (`~/.hermes/.env`)**:
    - `API_SERVER_URL`
    - `API_SERVER_KEY`
    - `API_SERVER_PORT` or `PORT`
+   - `HERMES_API_SERVER_NAME` (Optional display name override; defaults to `Hermes`)
 
 3. **Default Fallback**:
    - URL: `http://127.0.0.1:8642/v1`
    - Key: `dummy-key` (standard for local unauthenticated servers)
+   - Server Name: `Hermes`
 
 ---
 
