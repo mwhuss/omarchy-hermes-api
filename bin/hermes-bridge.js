@@ -446,16 +446,22 @@ async function handleStreamChat(options) {
 
   messages.push({ role: 'user', content: prompt });
 
-  const customHeaders = {};
-  if (sessionId) {
-    customHeaders['X-Hermes-Session-Id'] = sessionId;
+  let resolvedSessionId = sessionId;
+  if (!resolvedSessionId || String(resolvedSessionId).trim() === '') {
+    const timestamp = Date.now().toString(36);
+    const rand = Math.random().toString(36).substring(2, 7);
+    resolvedSessionId = `api-${timestamp}-${rand}`;
   }
-  customHeaders['X-Hermes-Source'] = 'omarchy-bar';
+
+  const customHeaders = {
+    'X-Hermes-Session-Id': resolvedSessionId,
+    'X-Hermes-Source': 'omarchy-bar'
+  };
 
   try {
     process.stdout.write(JSON.stringify({
       type: 'start',
-      session_id: sessionId || null,
+      session_id: resolvedSessionId,
       model: model || 'hermes-agent'
     }) + '\n');
 
@@ -482,6 +488,7 @@ async function handleStreamChat(options) {
         fullText += delta.content;
         process.stdout.write(JSON.stringify({
           type: 'delta',
+          session_id: resolvedSessionId,
           content: delta.content
         }) + '\n');
       }
@@ -492,6 +499,7 @@ async function handleStreamChat(options) {
           if (fn && fn.name) {
             process.stdout.write(JSON.stringify({
               type: 'tool_progress',
+              session_id: resolvedSessionId,
               tool: fn.name,
               status: 'running',
               label: fn.arguments || '',
@@ -509,6 +517,7 @@ async function handleStreamChat(options) {
         const ev = eventData;
         process.stdout.write(JSON.stringify({
           type: 'tool_progress',
+          session_id: resolvedSessionId,
           tool: ev.tool || ev.name || 'tool',
           status: ev.status || 'running',
           label: ev.label || ev.detail || ev.message || '',
@@ -520,7 +529,7 @@ async function handleStreamChat(options) {
 
     process.stdout.write(JSON.stringify({
       type: 'done',
-      session_id: sessionId || null,
+      session_id: resolvedSessionId,
       full_text: fullText,
       finish_reason: 'stop'
     }) + '\n');
@@ -531,6 +540,7 @@ async function handleStreamChat(options) {
   } catch (err) {
     process.stdout.write(JSON.stringify({
       type: 'error',
+      session_id: resolvedSessionId,
       error: err.message
     }) + '\n');
 
@@ -609,7 +619,7 @@ async function main() {
       let notify = false;
 
       for (let i = 1; i < args.length; i++) {
-        if (args[i] === '--session' && args[i + 1]) {
+        if ((args[i] === '--session' || args[i] === '--session-id') && args[i + 1]) {
           sessionId = args[++i];
         } else if (args[i] === '--prompt' && args[i + 1]) {
           prompt = args[++i];

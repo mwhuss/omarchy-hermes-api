@@ -13,7 +13,12 @@ Panel {
   manageIpc: false
 
   property bool isConnected: false
-  property bool isStreaming: false
+  property var activeStreams: ({})
+  property int activeStreamCount: 0
+  readonly property bool isStreaming: activeStreamCount > 0
+  readonly property bool isCurrentSessionStreaming: !!(selectedSessionId && activeStreams && activeStreams[selectedSessionId])
+  property var sessionCache: ({})
+  property bool isNearBottom: true
   property bool isRefreshing: false
   property bool isEditingTitle: false
   property bool isConfirmingDeleteSession: false
@@ -31,13 +36,16 @@ Panel {
   property string currentModel: "hermes-agent"
   property string searchQuery: ""
   property bool omarchyOnly: false
-  property string streamingSessionId: ""
   property bool hasSelectedInitialSession: false
 
   // Active chat state
   property var messages: []
   property string currentStreamingContent: ""
   property var currentToolEvents: []
+
+  function isSessionStreaming(sessionId) {
+    return !!(sessionId && root.activeStreams && root.activeStreams[sessionId])
+  }
 
   // Prompt history & draft state (scoped per session from active messages)
   function getCurrentSessionHistory() {
@@ -98,6 +106,31 @@ Panel {
     onTriggered: root.isConfirmingDeleteSession = false
   }
 
+  Timer {
+    id: scrollSnapTimer
+    interval: 50
+    repeat: false
+    onTriggered: {
+      if (chatFlick) {
+        chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
+      }
+    }
+  }
+
+  Timer {
+    id: fastPollTimer
+    interval: 3000
+    running: root.opened
+    repeat: true
+    onTriggered: {
+      root.refreshSessions()
+      if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
+        getSessionProc.command = ["node", root.scriptPath, "get-session", root.selectedSessionId]
+        getSessionProc.running = true
+      }
+    }
+  }
+
   function triggerRefresh() {
     root.isRefreshing = true
     refreshAnimationTimer.restart()
@@ -153,10 +186,54 @@ Panel {
     try {
       var res = JSON.parse(String(text).trim())
       if (res.success && Array.isArray(res.sessions)) {
-        root.sessions = res.sessions
-        if (!root.hasSelectedInitialSession && res.sessions.length > 0) {
+        var serverList = res.sessions
+        var merged = []
+        var serverMap = {}
+        for (var i = 0; i < serverList.length; i++) {
+          serverMap[serverList[i].id] = serverList[i]
+        }
+
+        // Keep any active streams that might not be on server yet
+        var activeIds = Object.keys(root.activeStreams || {})
+        for (var a = 0; a < activeIds.length; a++) {
+          var aid = activeIds[a]
+          if (!serverMap[aid]) {
+            var cachedActive = root.sessionCache[aid] || {}
+            merged.push({
+              id: aid,
+              title: cachedActive.title || "New Session",
+              created_at: cachedActive.created_at || new Date().toISOString(),
+              updated_at: cachedActive.updated_at || new Date().toISOString(),
+              source: "omarchy-bar",
+              message_count: (cachedActive.messages ? cachedActive.messages.length : 0),
+              model: root.currentModel
+            })
+          }
+        }
+
+        // Add server sessions
+        for (var s = 0; s < serverList.length; s++) {
+          var sItem = Object.assign({}, serverList[s])
+          if (root.sessionCache[sItem.id]) {
+            var c = root.sessionCache[sItem.id]
+            if (c.title && !c.title.startsWith("Session api-")) sItem.title = c.title
+            if (c.updated_at && new Date(c.updated_at) > new Date(sItem.updated_at)) {
+              sItem.updated_at = c.updated_at
+            }
+          }
+          merged.push(sItem)
+        }
+
+        // Sort by updated_at descending (Recency Ordering)
+        merged.sort(function(x, y) {
+          return new Date(y.updated_at).getTime() - new Date(x.updated_at).getTime()
+        })
+
+        root.sessions = merged
+
+        if (!root.hasSelectedInitialSession && merged.length > 0) {
           root.hasSelectedInitialSession = true
-          root.selectSession(res.sessions[0].id)
+          root.selectSession(merged[0].id)
         }
       }
     } catch (e) {
@@ -183,6 +260,24 @@ Panel {
       }
     }
 
+    // Instant tab switch from sessionCache (0ms latency, no empty flicker!)
+    if (root.sessionCache[sessionId] && Array.isArray(root.sessionCache[sessionId].messages)) {
+      root.messages = root.sessionCache[sessionId].messages
+    } else {
+      root.messages = []
+    }
+
+    // Restore active in-flight stream state for this session if streaming
+    if (root.activeStreams && root.activeStreams[sessionId]) {
+      root.currentStreamingContent = root.activeStreams[sessionId].streamingContent || ""
+      root.currentToolEvents = root.activeStreams[sessionId].toolEvents || []
+    } else {
+      root.currentStreamingContent = ""
+      root.currentToolEvents = []
+    }
+
+    root.scrollToBottomInstantly()
+
     if (getSessionProc.running) {
       getSessionProc.running = false
     }
@@ -199,13 +294,35 @@ Panel {
     try {
       var res = JSON.parse(String(text).trim())
       if (res.success && res.session) {
-        root.messages = res.session.messages || []
-        if (res.session.title && !res.session.title.startsWith("Session api-")) {
-          root.activeSessionTitle = res.session.title
+        var sid = res.session.id || root.selectedSessionId
+        var serverMsgs = res.session.messages || []
+
+        var cached = root.sessionCache[sid] || {}
+        var oldMsgs = cached.messages || []
+
+        // If local is currently streaming, don't overwrite local in-flight stream buffer
+        if (!root.isSessionStreaming(sid)) {
+          cached.messages = serverMsgs
+          if (res.session.title && !res.session.title.startsWith("Session api-")) {
+            cached.title = res.session.title
+          }
+          var updatedCache = Object.assign({}, root.sessionCache)
+          updatedCache[sid] = cached
+          root.sessionCache = updatedCache
+
+          if (root.selectedSessionId === sid) {
+            // Only update root.messages if there is an actual difference to avoid layout churn
+            if (oldMsgs.length !== serverMsgs.length || JSON.stringify(oldMsgs) !== JSON.stringify(serverMsgs)) {
+              root.messages = serverMsgs
+              if (res.session.title && !res.session.title.startsWith("Session api-")) {
+                root.activeSessionTitle = res.session.title
+              }
+              if (root.isNearBottom) {
+                root.scrollToBottomInstantly()
+              }
+            }
+          }
         }
-        Qt.callLater(function() {
-          if (chatFlick) chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
-        })
       }
     } catch (e) {
       console.warn("hermes-bridge/get-session parse error:", e)
@@ -231,13 +348,19 @@ Panel {
     }
     sessions = updatedSessions
 
+    if (root.sessionCache[selectedSessionId]) {
+      var c = Object.assign({}, root.sessionCache[selectedSessionId], { title: trimmed })
+      var uc = Object.assign({}, root.sessionCache)
+      uc[selectedSessionId] = c
+      root.sessionCache = uc
+    }
+
     renameSessionProc.command = ["node", root.scriptPath, "rename-session", selectedSessionId, trimmed]
     renameSessionProc.running = true
   }
 
   function startNewSession() {
     root.hasSelectedInitialSession = true
-    if (isStreaming) cancelStreaming()
     isEditingTitle = false
     isConfirmingDeleteSession = false
     showSystemPromptInput = false
@@ -289,81 +412,185 @@ Panel {
   }
 
   function deleteSession(sessionId) {
-    if (root.isStreaming && (root.streamingSessionId === sessionId || root.selectedSessionId === sessionId)) {
-      root.cancelStreaming()
+    if (root.isSessionStreaming(sessionId)) {
+      root.cancelStreaming(sessionId)
     }
     isConfirmingDeleteSession = false
     var remaining = sessions.filter(function(s) { return s.id !== sessionId })
     sessions = remaining
+
+    var updatedCache = Object.assign({}, root.sessionCache)
+    delete updatedCache[sessionId]
+    root.sessionCache = updatedCache
+
     if (selectedSessionId === sessionId) {
-      startNewSession()
+      if (remaining.length > 0) {
+        root.selectSession(remaining[0].id)
+      } else {
+        root.startNewSession()
+      }
     }
     deleteSessionProc.command = ["node", root.scriptPath, "delete-session", sessionId]
     deleteSessionProc.running = true
   }
 
+  function promoteSessionToTop(sessionId, title, lastMessage) {
+    var list = root.sessions.slice()
+    var foundIdx = -1
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === sessionId) {
+        foundIdx = i
+        break
+      }
+    }
+    var item
+    if (foundIdx >= 0) {
+      item = Object.assign({}, list[foundIdx], {
+        updated_at: new Date().toISOString()
+      })
+      if (title && !title.startsWith("Session api-")) item.title = title
+      list.splice(foundIdx, 1)
+      list.unshift(item)
+    } else {
+      var displayTitle = title
+      if (!displayTitle || displayTitle === "New Session" || displayTitle.startsWith("Session api-")) {
+        displayTitle = lastMessage ? (lastMessage.length > 32 ? (lastMessage.slice(0, 32) + "...") : lastMessage) : "New Session"
+      }
+      item = {
+        id: sessionId,
+        title: displayTitle,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        source: "omarchy-bar",
+        message_count: 1,
+        model: root.currentModel
+      }
+      list.unshift(item)
+    }
+    root.sessions = list
+  }
+
+  function scrollToBottomInstantly() {
+    root.isNearBottom = true
+    Qt.callLater(function() {
+      if (chatFlick) {
+        chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
+      }
+    })
+    scrollSnapTimer.restart()
+  }
+
+  function autoScrollFollow() {
+    if (!chatFlick) return
+    var dist = (chatFlick.contentHeight - chatFlick.height) - chatFlick.contentY
+    if (dist <= 80 || root.isNearBottom) {
+      chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
+    }
+  }
+
   function sendCurrentMessage() {
     if (!promptInput) return
     var text = String(promptInput.text || "").trim()
-    if (!text || isStreaming) return
+    if (!text) return
+
+    // If currently selected session is already generating, do not allow sending another in this session
+    if (root.selectedSessionId && root.isSessionStreaming(root.selectedSessionId)) return
+
+    var targetSessionId = root.selectedSessionId
+    var isNewSession = !targetSessionId
+
+    if (isNewSession) {
+      var timestamp = Date.now().toString(36)
+      var rand = Math.random().toString(36).substring(2, 6)
+      targetSessionId = "api-" + timestamp + "-" + rand
+      root.selectedSessionId = targetSessionId
+      root.activeSessionTitle = text.length > 32 ? (text.slice(0, 32) + "...") : text
+    }
 
     root.promptDraft = ""
     root.promptHistoryIndex = -1
-
     promptInput.text = ""
-    currentStreamingContent = ""
-    currentToolEvents = []
-    root.streamingSessionId = root.selectedSessionId
 
-    var updated = messages.slice()
-    updated.push({ role: "user", content: text, timestamp: new Date().toISOString() })
-    messages = updated
+    var currentMsgs = (root.sessionCache[targetSessionId] && root.sessionCache[targetSessionId].messages)
+      ? root.sessionCache[targetSessionId].messages.slice()
+      : (isNewSession ? [] : root.messages.slice())
 
-    isStreaming = true
+    currentMsgs.push({ role: "user", content: text, timestamp: new Date().toISOString() })
+
+    var cached = Object.assign({}, root.sessionCache[targetSessionId] || {}, {
+      messages: currentMsgs,
+      title: root.activeSessionTitle || text,
+      updated_at: new Date().toISOString()
+    })
+    var updatedCache = Object.assign({}, root.sessionCache)
+    updatedCache[targetSessionId] = cached
+    root.sessionCache = updatedCache
+
+    if (root.selectedSessionId === targetSessionId) {
+      root.messages = currentMsgs
+      root.currentStreamingContent = ""
+      root.currentToolEvents = []
+    }
+
+    root.promoteSessionToTop(targetSessionId, root.activeSessionTitle, text)
 
     var args = [
       "node",
       root.scriptPath,
       "stream-chat",
       "--prompt", text,
-      "--model", root.currentModel
+      "--model", root.currentModel,
+      "--session", targetSessionId
     ]
 
-    if (selectedSessionId) {
-      args.push("--session", selectedSessionId)
-    } else if (sessionSystemPrompt && sessionSystemPrompt.trim() !== "") {
+    if (sessionSystemPrompt && sessionSystemPrompt.trim() !== "") {
       args.push("--system", sessionSystemPrompt.trim())
     }
 
-    var historySlice = updated.slice(0, -1).map(function(m) {
+    var historySlice = currentMsgs.slice(0, -1).map(function(m) {
       return { role: m.role, content: m.content }
     })
     args.push("--history", JSON.stringify(historySlice))
 
-    streamChatProc.command = args
-    streamChatProc.running = true
+    root.startSessionStreamProcess(targetSessionId, args)
 
-    Qt.callLater(function() {
-      if (chatFlick) chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
-    })
+    root.scrollToBottomInstantly()
   }
 
-  function handleStreamLine(line) {
+  function startSessionStreamProcess(targetSessionId, args) {
+    if (!targetSessionId) return
+    var procObj = streamProcessComponent.createObject(root, {
+      targetSessionId: targetSessionId,
+      command: args,
+      running: true
+    })
+    var updated = Object.assign({}, root.activeStreams)
+    updated[targetSessionId] = {
+      proc: procObj,
+      streamingContent: "",
+      toolEvents: [],
+      startedAt: Date.now()
+    }
+    root.activeStreams = updated
+    root.activeStreamCount = Object.keys(updated).length
+  }
+
+  function handleStreamEvent(targetSessionId, line) {
     var trimmed = String(line || "").trim()
     if (!trimmed) return
     try {
       var ev = JSON.parse(trimmed)
-      if (ev.type === "start") {
-        if (ev.session_id) {
-          root.streamingSessionId = ev.session_id
-          if (!root.selectedSessionId) {
-            root.selectedSessionId = ev.session_id
-          }
+      var streamInfo = root.activeStreams[targetSessionId]
+      if (!streamInfo) return
+
+      if (ev.type === "delta") {
+        streamInfo.streamingContent = (streamInfo.streamingContent || "") + (ev.content || "")
+        if (root.selectedSessionId === targetSessionId) {
+          root.currentStreamingContent = streamInfo.streamingContent
+          root.autoScrollFollow()
         }
-      } else if (ev.type === "delta") {
-        root.currentStreamingContent += ev.content
       } else if (ev.type === "tool_progress") {
-        var tools = root.currentToolEvents.slice()
+        var tools = (streamInfo.toolEvents || []).slice()
         var foundIdx = -1
         for (var t = 0; t < tools.length; t++) {
           if (ev.id && tools[t].id === ev.id) {
@@ -382,84 +609,110 @@ Panel {
         } else {
           tools.push(ev)
         }
-        root.currentToolEvents = tools
+        streamInfo.toolEvents = tools
+        if (root.selectedSessionId === targetSessionId) {
+          root.currentToolEvents = tools
+          root.autoScrollFollow()
+        }
       } else if (ev.type === "done") {
-        root.isStreaming = false
-        var targetSessionId = ev.session_id || root.streamingSessionId || root.selectedSessionId
-        var replyText = ev.full_text || root.currentStreamingContent
-
-        if (root.selectedSessionId === targetSessionId) {
-          var finalMsgs = root.messages.slice()
-          finalMsgs.push({
-            role: "assistant",
-            content: replyText,
-            timestamp: new Date().toISOString(),
-            tool_events: root.currentToolEvents.slice()
-          })
-          root.messages = finalMsgs
-        }
-
-        root.currentStreamingContent = ""
-        root.currentToolEvents = []
-        root.streamingSessionId = ""
-        root.refreshSessions()
-
-        var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
-        if (!isCurrentlyViewing) {
-          root.postCompletionNotification(replyText, false, targetSessionId)
-        }
+        var replyText = ev.full_text || streamInfo.streamingContent || ""
+        root.finishSessionStream(targetSessionId, replyText, false, streamInfo.toolEvents)
       } else if (ev.type === "error") {
-        root.isStreaming = false
-        var targetSessionId = ev.session_id || root.streamingSessionId || root.selectedSessionId
-        root.statusError = ev.error
-
-        if (root.selectedSessionId === targetSessionId) {
-          var errMsgs = root.messages.slice()
-          errMsgs.push({
-            role: "assistant",
-            content: "⚠️ Error: " + ev.error,
-            timestamp: new Date().toISOString()
-          })
-          root.messages = errMsgs
-        }
-
-        root.currentStreamingContent = ""
-        root.currentToolEvents = []
-        root.streamingSessionId = ""
-
-        var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
-        if (!isCurrentlyViewing) {
-          root.postCompletionNotification(ev.error, true, targetSessionId)
-        }
+        root.finishSessionStream(targetSessionId, ev.error || "Generation error", true, streamInfo.toolEvents)
       }
     } catch (e) {
       // Partial chunk
     }
-    if (chatFlick) {
-      chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
-    }
   }
 
-  function cancelStreaming() {
-    if (streamChatProc.running) {
-      streamChatProc.running = false
+  function finishSessionStream(targetSessionId, replyText, isError, toolEvents) {
+    var streamInfo = root.activeStreams[targetSessionId]
+    if (streamInfo && streamInfo.proc) {
+      try {
+        streamInfo.proc.running = false
+        streamInfo.proc.destroy()
+      } catch (e) {}
     }
-    var wasTargetSession = (selectedSessionId === streamingSessionId || !streamingSessionId)
-    isStreaming = false
-    streamingSessionId = ""
-    if (currentStreamingContent) {
-      if (wasTargetSession) {
-        var updated = messages.slice()
-        updated.push({
-          role: "assistant",
-          content: currentStreamingContent,
-          timestamp: new Date().toISOString(),
-          tool_events: currentToolEvents.slice()
-        })
-        messages = updated
+
+    var updatedActive = Object.assign({}, root.activeStreams)
+    delete updatedActive[targetSessionId]
+    root.activeStreams = updatedActive
+    root.activeStreamCount = Object.keys(updatedActive).length
+
+    var cached = root.sessionCache[targetSessionId] || {}
+    var msgs = (cached.messages || []).slice()
+    msgs.push({
+      role: "assistant",
+      content: isError ? ("⚠️ Error: " + replyText) : replyText,
+      timestamp: new Date().toISOString(),
+      tool_events: (toolEvents || []).slice()
+    })
+    cached.messages = msgs
+    cached.updated_at = new Date().toISOString()
+    var updatedCache = Object.assign({}, root.sessionCache)
+    updatedCache[targetSessionId] = cached
+    root.sessionCache = updatedCache
+
+    if (root.selectedSessionId === targetSessionId) {
+      root.messages = msgs
+      root.currentStreamingContent = ""
+      root.currentToolEvents = []
+      root.scrollToBottomInstantly()
+    }
+
+    root.promoteSessionToTop(targetSessionId, cached.title || root.activeSessionTitle, replyText)
+
+    var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
+    if (!isCurrentlyViewing) {
+      root.postCompletionNotification(replyText, isError, targetSessionId)
+    }
+
+    root.refreshSessions()
+  }
+
+  function cancelStreaming(sessionId) {
+    var sid = sessionId || root.selectedSessionId
+    if (!sid) return
+    var streamInfo = root.activeStreams[sid]
+    if (!streamInfo) return
+
+    if (streamInfo.proc) {
+      try {
+        streamInfo.proc.running = false
+        streamInfo.proc.destroy()
+      } catch (e) {}
+    }
+
+    var partialContent = streamInfo.streamingContent || ""
+    var tools = streamInfo.toolEvents || []
+
+    var updatedActive = Object.assign({}, root.activeStreams)
+    delete updatedActive[sid]
+    root.activeStreams = updatedActive
+    root.activeStreamCount = Object.keys(updatedActive).length
+
+    if (partialContent) {
+      var cached = root.sessionCache[sid] || {}
+      var msgs = (cached.messages || []).slice()
+      msgs.push({
+        role: "assistant",
+        content: partialContent,
+        timestamp: new Date().toISOString(),
+        tool_events: tools
+      })
+      cached.messages = msgs
+      var updatedCache = Object.assign({}, root.sessionCache)
+      updatedCache[sid] = cached
+      root.sessionCache = updatedCache
+
+      if (root.selectedSessionId === sid) {
+        root.messages = msgs
       }
-      currentStreamingContent = ""
-      currentToolEvents = []
+    }
+
+    if (root.selectedSessionId === sid) {
+      root.currentStreamingContent = ""
+      root.currentToolEvents = []
     }
   }
 
@@ -588,6 +841,17 @@ Panel {
       }
       return "ok"
     }
+    function syncSession(sessionId: string): string {
+      root.refreshSessions()
+      var cleanId = sessionId ? String(sessionId).trim() : ""
+      if (cleanId && root.selectedSessionId === cleanId) {
+        if (!getSessionProc.running) {
+          getSessionProc.command = ["node", root.scriptPath, "get-session", cleanId]
+          getSessionProc.running = true
+        }
+      }
+      return "ok"
+    }
     function testNotify(): string {
       root.postCompletionNotification("Test response from " + root.serverName, false, root.selectedSessionId)
       return "ok"
@@ -678,42 +942,36 @@ Panel {
     }
   }
 
-  Process {
-    id: streamChatProc
-    running: false
-    command: []
-    stdout: SplitParser {
-      onRead: function(line) {
-        root.handleStreamLine(line)
+  Component {
+    id: streamProcessComponent
+    Process {
+      id: proc
+      property string targetSessionId: ""
+      running: false
+      command: []
+      stdout: SplitParser {
+        onRead: function(line) {
+          root.handleStreamEvent(proc.targetSessionId, line)
+        }
       }
-    }
-    stderr: StdioCollector {
-      id: streamStderr
-      waitForEnd: true
-      onStreamFinished: function(text) {
-        if (text && text.trim()) console.warn("hermes-bridge/stream-chat stderr:", text)
+      stderr: StdioCollector {
+        id: procStderr
+        waitForEnd: true
+        onStreamFinished: function(text) {
+          if (text && text.trim()) console.warn("hermes-bridge/stream-chat stderr [" + proc.targetSessionId + "]:", text)
+        }
       }
-    }
-    onExited: function(exitCode) {
-      if (root.isStreaming) {
-        var targetSessionId = root.streamingSessionId || root.selectedSessionId
-        if (exitCode !== 0 && !root.currentStreamingContent) {
-          var errText = String(streamStderr.text || "").trim() || "Bridge process error (code " + exitCode + ")"
-          if (root.selectedSessionId === targetSessionId) {
-            var msgs = root.messages.slice()
-            msgs.push({
-              role: "assistant",
-              content: "⚠️ " + errText,
-              timestamp: new Date().toISOString()
-            })
-            root.messages = msgs
-          }
-          var isCurrentlyViewing = root.opened && (root.selectedSessionId === targetSessionId)
-          if (!isCurrentlyViewing) {
-            root.postCompletionNotification(errText, true, targetSessionId)
+      onExited: function(exitCode) {
+        if (root.isSessionStreaming(proc.targetSessionId)) {
+          var streamInfo = root.activeStreams[proc.targetSessionId]
+          var hasContent = streamInfo && streamInfo.streamingContent
+          if (exitCode !== 0 && !hasContent) {
+            var errText = String(procStderr.text || "").trim() || "Bridge process error (code " + exitCode + ")"
+            root.finishSessionStream(proc.targetSessionId, errText, true, streamInfo ? streamInfo.toolEvents : [])
+          } else if (exitCode !== 0 && hasContent) {
+            root.finishSessionStream(proc.targetSessionId, streamInfo.streamingContent, false, streamInfo.toolEvents)
           }
         }
-        root.cancelStreaming()
       }
     }
   }
@@ -1014,6 +1272,14 @@ Panel {
                 spacing: 4
                 boundsBehavior: Flickable.StopAtBounds
 
+                displaced: Transition {
+                  NumberAnimation {
+                    properties: "y"
+                    duration: 250
+                    easing.type: Easing.OutCubic
+                  }
+                }
+
                 delegate: Rectangle {
                   id: sessionDelegate
                   width: sessionListView.width
@@ -1080,7 +1346,7 @@ Panel {
                         radius: 3
                         anchors.centerIn: parent
                         color: "#10B981"
-                        visible: root.isStreaming && root.streamingSessionId === modelData.id
+                        visible: !!(root.activeStreams && root.activeStreams[modelData.id])
 
                         SequentialAnimation on opacity {
                           running: sessionProgressDot.visible
@@ -1397,16 +1663,27 @@ Panel {
               flickableDirection: Flickable.VerticalFlick
               ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
+              onContentYChanged: {
+                var maxScroll = Math.max(0, contentHeight - height)
+                root.isNearBottom = (maxScroll - contentY) <= 80
+              }
+
               ColumnLayout {
                 id: chatColumn
                 width: chatFlick.width
                 spacing: 12
 
+                onImplicitHeightChanged: {
+                  if (root.isNearBottom) {
+                    chatFlick.contentY = Math.max(0, chatFlick.contentHeight - chatFlick.height)
+                  }
+                }
+
                 // Empty state greeting
                 Item {
                   Layout.fillWidth: true
                   implicitHeight: emptyCol.implicitHeight + 40
-                  visible: root.messages.length === 0 && !root.isStreaming
+                  visible: root.messages.length === 0 && !root.isCurrentSessionStreaming
 
                   ColumnLayout {
                     id: emptyCol
@@ -1864,7 +2141,7 @@ Panel {
                 Item {
                   Layout.fillWidth: true
                   implicitHeight: streamCol.implicitHeight + 8
-                  visible: root.isStreaming && (root.selectedSessionId === root.streamingSessionId || !root.streamingSessionId)
+                  visible: root.isCurrentSessionStreaming
 
                   ColumnLayout {
                     id: streamCol
@@ -1930,7 +2207,7 @@ Panel {
                           color: root.accent
 
                           SequentialAnimation on opacity {
-                            running: root.isStreaming && (root.selectedSessionId === root.streamingSessionId || !root.streamingSessionId) && !root.currentStreamingContent
+                            running: root.isCurrentSessionStreaming && !root.currentStreamingContent
                             loops: Animation.Infinite
                             NumberAnimation { from: 0.2; to: 1.0; duration: 400 }
                             NumberAnimation { from: 1.0; to: 0.2; duration: 400 }
@@ -2038,8 +2315,8 @@ Panel {
                   width: 34
                   height: 34
                   radius: 6
-                  color: root.isStreaming
-                    ? Qt.rgba(239/255, 68/255, 68/255, 0.2)
+                  color: root.isCurrentSessionStreaming
+                    ? (sendHover.containsMouse ? "#EF4444" : Qt.rgba(239/255, 68/255, 68/255, 0.2))
                     : (sendHover.containsMouse ? root.accent : Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.8))
 
                   MouseArea {
@@ -2048,8 +2325,8 @@ Panel {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      if (root.isStreaming) {
-                        root.cancelStreaming()
+                      if (root.isCurrentSessionStreaming) {
+                        root.cancelStreaming(root.selectedSessionId)
                       } else {
                         root.sendCurrentMessage()
                       }
@@ -2058,10 +2335,10 @@ Panel {
 
                   Text {
                     anchors.centerIn: parent
-                    text: root.isStreaming ? "\uF04D" : "\uF1D8" // Stop vs Send Paper Airplane
+                    text: root.isCurrentSessionStreaming ? "\uF04D" : "\uF1D8" // Stop vs Send Paper Airplane
                     font.family: root.fontFamily
                     font.pixelSize: 12
-                    color: root.isStreaming ? "#EF4444" : "#FFFFFF"
+                    color: root.isCurrentSessionStreaming ? (sendHover.containsMouse ? "#FFFFFF" : "#EF4444") : "#FFFFFF"
                   }
                 }
               }

@@ -144,6 +144,61 @@ async function testStreamChatNotify() {
   console.log('  ✔ stream-chat with --notify completed successfully');
 }
 
+async function testClientGeneratedSessionId() {
+  console.log('Testing: client session ID auto-generation and event tagging...');
+  const res = await runBridge(['stream-chat', '--prompt', 'Reply with "AUTO_ID_OK" only.']);
+  assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+
+  const lines = res.stdout.trim().split('\n');
+  assert(lines.length > 0, 'Should output at least one line');
+  const events = lines.map(l => JSON.parse(l));
+
+  const startEv = events.find(e => e.type === 'start');
+  assert(startEv, 'Should have start event');
+  assert(startEv.session_id, 'start event must contain session_id');
+  assert(typeof startEv.session_id === 'string' && startEv.session_id.startsWith('api-'), 'session_id should be non-empty string starting with api-');
+
+  const doneEv = events.find(e => e.type === 'done');
+  assert(doneEv, 'Should have done event');
+  assert.strictEqual(doneEv.session_id, startEv.session_id, 'done event session_id must match start session_id');
+
+  // Verify all delta and tool_progress events carry this session_id
+  for (const ev of events) {
+    if (ev.type === 'delta' || ev.type === 'tool_progress') {
+      assert.strictEqual(ev.session_id, startEv.session_id, `${ev.type} must include session_id matching start event`);
+    }
+  }
+
+  console.log('  ✔ auto-generated session_id verified across events (id:', startEv.session_id, ')');
+}
+
+async function testConcurrentStreams() {
+  console.log('Testing: concurrent multi-session stream execution...');
+  const session1 = `test-concurrent-1-${Date.now()}`;
+  const session2 = `test-concurrent-2-${Date.now()}`;
+
+  const [res1, res2] = await Promise.all([
+    runBridge(['stream-chat', '--session', session1, '--prompt', 'Reply with "CONC_ONE" only.']),
+    runBridge(['stream-chat', '--session', session2, '--prompt', 'Reply with "CONC_TWO" only.'])
+  ]);
+
+  assert.strictEqual(res1.code, 0, `Stream 1 exit code should be 0, got ${res1.code}`);
+  assert.strictEqual(res2.code, 0, `Stream 2 exit code should be 0, got ${res2.code}`);
+
+  const events1 = res1.stdout.trim().split('\n').map(l => JSON.parse(l));
+  const events2 = res2.stdout.trim().split('\n').map(l => JSON.parse(l));
+
+  const done1 = events1.find(e => e.type === 'done');
+  const done2 = events2.find(e => e.type === 'done');
+
+  assert(done1, 'Stream 1 should finish with done');
+  assert(done2, 'Stream 2 should finish with done');
+  assert.strictEqual(done1.session_id, session1, 'Stream 1 done event should match session1');
+  assert.strictEqual(done2.session_id, session2, 'Stream 2 done event should match session2');
+
+  console.log('  ✔ concurrent streams completed independently and successfully');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -156,6 +211,8 @@ async function runAllTests() {
     await testGetSession();
     await testRenameSession();
     await testStreamChat();
+    await testClientGeneratedSessionId();
+    await testConcurrentStreams();
     await testStreamChatNotify();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');

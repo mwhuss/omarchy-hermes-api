@@ -40,3 +40,15 @@ _Avoid_: Session drawer, thread list, history sidebar
 The configured display identity for the Hermes Agent instance (defaulting to "Hermes"), resolved via `HERMES_API_SERVER_NAME` in the environment or `~/.hermes/.env`. Displayed across the flyout header, status bar tooltip, conversational greetings, and desktop notifications.
 _Avoid_: Agent title, bot alias, profile tag
 
+**In-Flight Session Stream**:
+The active generation lifecycle and real-time streaming state (thinking indicator, tool progress, and token buffer) scoped independently to a single Hermes Session.
+_Avoid_: Global stream, background task, active request
+
+**Session Cache**:
+The client-side in-memory cache of Hermes Session message histories and view states, enabling instantaneous session switching without network round-trip flickers.
+_Avoid_: Local storage, message buffer, memory store
+
+**Session Recency Ordering**:
+The dynamic sorting of the Session List where the most recently active Hermes Session (whether from local user submissions, assistant turns, or external sources) is positioned at the top.
+_Avoid_: Sorting by date, list shuffle, chronological view
+
