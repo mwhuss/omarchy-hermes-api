@@ -853,6 +853,22 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function openSettings(): string {
+      root.open()
+      root.isSettingsOpen = true
+      root.loadSettings()
+      return "ok"
+    }
+    function closeSettings(): string {
+      root.isSettingsOpen = false
+      return "ok"
+    }
+    function toggleSettings(): string {
+      root.open()
+      root.isSettingsOpen = !root.isSettingsOpen
+      if (root.isSettingsOpen) root.loadSettings()
+      return "ok"
+    }
     function openSession(sessionId: string): string {
       root.open()
       if (sessionId && String(sessionId).trim() !== "") {
