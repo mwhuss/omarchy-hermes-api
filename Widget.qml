@@ -2762,25 +2762,13 @@ Panel {
                           Layout.fillWidth: true
                         }
 
-                        RowLayout {
-                          spacing: 4
+                        Text {
+                          text: (modelData.url || "http://127.0.0.1") + (modelData.port ? (":" + modelData.port) : "")
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          color: root.dimText
+                          elide: Text.ElideRight
                           Layout.fillWidth: true
-
-                          Text {
-                            text: (modelData.url || "http://127.0.0.1") + (modelData.port ? (":" + modelData.port) : "")
-                            font.family: root.fontFamily
-                            font.pixelSize: 9
-                            color: root.dimText
-                            elide: Text.ElideRight
-                            Layout.fillWidth: true
-                          }
-
-                          Text {
-                            text: (modelData.profiles ? modelData.profiles.length : 0) + " prof"
-                            font.family: root.fontFamily
-                            font.pixelSize: 9
-                            color: root.accent
-                          }
                         }
                       }
                     }
