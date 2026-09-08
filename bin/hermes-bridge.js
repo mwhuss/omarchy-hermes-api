@@ -619,6 +619,22 @@ async function handleGetSettings() {
       const content = fs.readFileSync(settingsPath, 'utf8');
       const data = JSON.parse(content);
       if (data && Array.isArray(data.endpoints)) {
+        // Ensure each endpoint has the immutable default profile at index 0
+        data.endpoints.forEach(ep => {
+          if (!Array.isArray(ep.profiles)) {
+            ep.profiles = [{ name: 'default', apiKey: '' }];
+          } else {
+            const defaultIdx = ep.profiles.findIndex(p => (typeof p === 'string' ? p : p.name) === 'default');
+            if (defaultIdx === -1) {
+              ep.profiles.unshift({ name: 'default', apiKey: '' });
+            } else if (defaultIdx > 0) {
+              const def = ep.profiles.splice(defaultIdx, 1)[0];
+              ep.profiles.unshift(typeof def === 'string' ? { name: 'default', apiKey: '' } : { name: 'default', apiKey: '' });
+            } else if (typeof ep.profiles[0] === 'string') {
+              ep.profiles[0] = { name: 'default', apiKey: '' };
+            }
+          }
+        });
         console.log(JSON.stringify({
           success: true,
           seeded: false,
@@ -780,27 +796,33 @@ async function handleSaveSettings(rawInput) {
 
     const apiKey = typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
 
-    const profiles = [];
+    // The default profile is immutable and represents the endpoint's base hermes-agent
+    const profiles = [{ name: 'default', apiKey: '' }];
     if (Array.isArray(ep.profiles)) {
       for (let j = 0; j < ep.profiles.length; j++) {
         const prof = ep.profiles[j];
+        let profName = '';
+        let profKey = '';
         if (typeof prof === 'string') {
-          const profName = prof.trim();
-          if (profName) {
-            profiles.push({ name: profName, apiKey: '' });
-          }
+          profName = prof.trim();
         } else if (prof && typeof prof === 'object') {
-          const profName = typeof prof.name === 'string' ? prof.name.trim() : '';
-          if (!profName) {
-            console.log(JSON.stringify({
-              success: false,
-              error: `Profile #${j + 1} in endpoint "${name}" must have a name`
-            }));
-            return;
-          }
-          const profKey = typeof prof.apiKey === 'string' ? prof.apiKey.trim() : '';
-          profiles.push({ name: profName, apiKey: profKey });
+          profName = typeof prof.name === 'string' ? prof.name.trim() : '';
+          profKey = typeof prof.apiKey === 'string' ? prof.apiKey.trim() : '';
         }
+
+        // Skip the immutable default profile if submitted in payload (already at index 0)
+        if (profName.toLowerCase() === 'default') {
+          continue;
+        }
+
+        if (!profName) {
+          console.log(JSON.stringify({
+            success: false,
+            error: `Profile #${j + 1} in endpoint "${name}" must have a name`
+          }));
+          return;
+        }
+        profiles.push({ name: profName, apiKey: profKey });
       }
     }
 

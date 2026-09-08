@@ -242,6 +242,13 @@ async function testSettings() {
     assert.strictEqual(mode, 0o600, `File permissions should be 0600, got ${mode.toString(8)}`);
     console.log('  ✔ save-settings passed with 0600 file permissions');
 
+    // Verify default profile immutability in saved settings
+    const savedData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.strictEqual(savedData.endpoints[0].profiles[0].name, 'default', 'First profile must always be "default"');
+    assert.strictEqual(savedData.endpoints[0].profiles[0].apiKey, '', 'Default profile apiKey must remain empty (inheriting endpoint)');
+    assert.strictEqual(savedData.endpoints[0].profiles.length, 2, 'Should contain default profile and custom coder profile');
+    console.log('  ✔ default profile immutability verified');
+
     console.log('Testing: save-settings validation...');
     // Invalid port
     const invalidPortRes = await runBridge(['save-settings', JSON.stringify({

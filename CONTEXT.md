@@ -57,7 +57,7 @@ A configured network target (URL, port, API key, display name) running an instan
 _Avoid_: Host, server instance, backend URL
 
 **Agent Profile**:
-A named persona or operational scope within a Hermes Endpoint with its own route and credentials.
+A named persona or operational scope within a Hermes Endpoint with its own route and credentials. Each Hermes Endpoint possesses an immutable default Agent Profile representing the endpoint's base `hermes-agent` and credentials.
 _Avoid_: Bot persona, flavor, agent role
 
 **Settings View**:
