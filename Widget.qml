@@ -976,9 +976,7 @@ Panel {
       url: "http://127.0.0.1",
       port: 8642,
       apiKey: "",
-      profiles: [
-        { name: "default", apiKey: "" }
-      ]
+      profiles: []
     }
     eps.push(newEp)
     root.settingsEndpoints = eps
@@ -1001,10 +999,7 @@ Panel {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
     var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
     var ep = eps[root.selectedEndpointIndex]
-    if (!ep.profiles) ep.profiles = [{ name: "default", apiKey: "" }]
-    if (ep.profiles.length === 0 || ep.profiles[0].name !== "default") {
-      ep.profiles.unshift({ name: "default", apiKey: "" })
-    }
+    if (!ep.profiles) ep.profiles = []
     ep.profiles.push({
       name: "",
       apiKey: ""
@@ -1017,7 +1012,6 @@ Panel {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
     var ep = root.settingsEndpoints[root.selectedEndpointIndex]
     if (!ep || !ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
-    if (profIndex === 0 || ep.profiles[profIndex].name === "default") return // immutable default profile
     ep.profiles[profIndex][field] = value
   }
 
@@ -1026,7 +1020,6 @@ Panel {
     var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
     var ep = eps[root.selectedEndpointIndex]
     if (!ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
-    if (profIndex === 0 || ep.profiles[profIndex].name === "default") return // immutable default profile
     ep.profiles.splice(profIndex, 1)
     root.settingsEndpoints = eps
     root.settingsErrorMessage = ""
@@ -1058,12 +1051,11 @@ Panel {
         return
       }
       if (ep.profiles) {
-        if (ep.profiles.length === 0 || ep.profiles[0].name !== "default") {
-          ep.profiles.unshift({ name: "default", apiKey: "" })
-        } else {
-          ep.profiles[0] = { name: "default", apiKey: "" }
-        }
-        for (var j = 1; j < ep.profiles.length; j++) {
+        // Strip any 'default' profile - default profile is purely ornamental in UI and never saved
+        ep.profiles = ep.profiles.filter(function(p) {
+          return p && p.name && p.name.trim().toLowerCase() !== "default"
+        })
+        for (var j = 0; j < ep.profiles.length; j++) {
           var profName = (ep.profiles[j].name || "").trim()
           if (!profName) {
             root.settingsErrorMessage = "Profile #" + (j + 1) + " in endpoint '" + name + "' must have a name."
@@ -1075,7 +1067,7 @@ Panel {
           }
         }
       } else {
-        ep.profiles = [{ name: "default", apiKey: "" }]
+        ep.profiles = []
       }
     }
 
@@ -3205,6 +3197,104 @@ Panel {
                     Layout.fillWidth: true
                     spacing: 6
 
+                    // Ornamental Default Profile (Purely visual representation of the endpoint's base hermes-agent)
+                    Rectangle {
+                      Layout.fillWidth: true
+                      height: 38
+                      radius: 6
+                      color: root.cardBg
+                      border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
+
+                      RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 8
+
+                        // Name & badge
+                        Rectangle {
+                          Layout.preferredWidth: 150
+                          Layout.fillHeight: true
+                          color: "transparent"
+
+                          RowLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            Text {
+                              text: "default"
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              font.weight: Font.DemiBold
+                              color: root.foreground
+                            }
+
+                            Rectangle {
+                              radius: 3
+                              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                              border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                              implicitWidth: defaultBadgeText.implicitWidth + 8
+                              implicitHeight: 16
+
+                              Text {
+                                id: defaultBadgeText
+                                anchors.centerIn: parent
+                                text: "hermes-agent"
+                                font.family: root.fontFamily
+                                font.pixelSize: 9
+                                font.weight: Font.Medium
+                                color: root.accent
+                              }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                          }
+                        }
+
+                        Rectangle {
+                          Layout.fillHeight: true
+                          width: 1
+                          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                        }
+
+                        // Credentials representation
+                        Item {
+                          Layout.fillWidth: true
+                          Layout.fillHeight: true
+
+                          RowLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            Text {
+                              Layout.fillWidth: true
+                              text: "Inherits endpoint credentials"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.dimText
+                              elide: Text.ElideRight
+                            }
+                          }
+                        }
+
+                        // Lock indicator (immutable)
+                        Rectangle {
+                          width: 22
+                          height: 22
+                          color: "transparent"
+
+                          Text {
+                            anchors.centerIn: parent
+                            text: "\uF023" // Lock icon
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            color: root.dimText
+                          }
+                        }
+                      }
+                    }
+
+                    // Custom Profiles Repeater
                     Repeater {
                       model: (settingsFormCol.curEp && settingsFormCol.curEp.profiles) ? settingsFormCol.curEp.profiles : []
                       delegate: Rectangle {
@@ -3213,9 +3303,8 @@ Panel {
                         height: 38
                         radius: 6
                         color: root.cardBg
-                        border.color: isDefaultProfile ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25) : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
 
-                        property bool isDefaultProfile: (index === 0 || (modelData && modelData.name === "default"))
                         property bool maskProfKey: true
 
                         RowLayout {
@@ -3230,54 +3319,17 @@ Panel {
                             Layout.fillHeight: true
                             color: "transparent"
 
-                            // Default profile: Immutable label with hermes-agent badge
-                            RowLayout {
-                              anchors.fill: parent
-                              visible: profRowItem.isDefaultProfile
-                              spacing: 6
-
-                              Text {
-                                text: "default"
-                                font.family: root.fontFamily
-                                font.pixelSize: 11
-                                font.weight: Font.DemiBold
-                                color: root.foreground
-                              }
-
-                              Rectangle {
-                                radius: 3
-                                color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                                border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-                                implicitWidth: defaultBadgeText.implicitWidth + 8
-                                implicitHeight: 16
-
-                                Text {
-                                  id: defaultBadgeText
-                                  anchors.centerIn: parent
-                                  text: "hermes-agent"
-                                  font.family: root.fontFamily
-                                  font.pixelSize: 9
-                                  font.weight: Font.Medium
-                                  color: root.accent
-                                }
-                              }
-
-                              Item { Layout.fillWidth: true }
-                            }
-
-                            // Custom profiles: Editable text input
                             TextInput {
                               id: profNameInput
                               anchors.fill: parent
-                              visible: !profRowItem.isDefaultProfile
                               verticalAlignment: TextInput.AlignVCenter
                               font.family: root.fontFamily
                               font.pixelSize: 11
                               color: root.foreground
                               clip: true
-                              text: (!profRowItem.isDefaultProfile && modelData) ? (modelData.name || "") : ""
+                              text: modelData ? (modelData.name || "") : ""
                               onTextChanged: {
-                                if (activeFocus && !profRowItem.isDefaultProfile) {
+                                if (activeFocus) {
                                   root.updateProfileField(index, "name", text)
                                 }
                               }
@@ -3289,7 +3341,7 @@ Panel {
                               font.family: root.fontFamily
                               font.pixelSize: 11
                               color: root.subtleText
-                              visible: !profRowItem.isDefaultProfile && (!profNameInput.text || profNameInput.text.length === 0)
+                              visible: !profNameInput.text || profNameInput.text.length === 0
                             }
                           }
 
@@ -3304,36 +3356,18 @@ Panel {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
 
-                            // Default profile: Immutable credentials indicator
-                            RowLayout {
-                              anchors.fill: parent
-                              visible: profRowItem.isDefaultProfile
-                              spacing: 6
-
-                              Text {
-                                Layout.fillWidth: true
-                                text: "Inherits endpoint credentials"
-                                font.family: root.fontFamily
-                                font.pixelSize: 10
-                                color: root.dimText
-                                elide: Text.ElideRight
-                              }
-                            }
-
-                            // Custom profiles: Editable API key with reveal toggle
                             TextInput {
                               id: profKeyInput
                               anchors.fill: parent
-                              visible: !profRowItem.isDefaultProfile
                               verticalAlignment: TextInput.AlignVCenter
                               font.family: root.fontFamily
                               font.pixelSize: 11
                               color: root.foreground
                               clip: true
                               echoMode: profRowItem.maskProfKey ? TextInput.Password : TextInput.Normal
-                              text: (!profRowItem.isDefaultProfile && modelData) ? (modelData.apiKey || "") : ""
+                              text: modelData ? (modelData.apiKey || "") : ""
                               onTextChanged: {
-                                if (activeFocus && !profRowItem.isDefaultProfile) {
+                                if (activeFocus) {
                                   root.updateProfileField(index, "apiKey", text)
                                 }
                               }
@@ -3345,29 +3379,12 @@ Panel {
                               font.family: root.fontFamily
                               font.pixelSize: 10
                               color: root.subtleText
-                              visible: !profRowItem.isDefaultProfile && (!profKeyInput.text || profKeyInput.text.length === 0)
+                              visible: !profKeyInput.text || profKeyInput.text.length === 0
                             }
                           }
 
-                          // Default profile: Locked indicator (immutable)
+                          // Toggle eye
                           Rectangle {
-                            visible: profRowItem.isDefaultProfile
-                            width: 22
-                            height: 22
-                            color: "transparent"
-
-                            Text {
-                              anchors.centerIn: parent
-                              text: "\uF023" // Lock icon
-                              font.family: root.fontFamily
-                              font.pixelSize: 11
-                              color: root.dimText
-                            }
-                          }
-
-                          // Custom profiles: Toggle eye
-                          Rectangle {
-                            visible: !profRowItem.isDefaultProfile
                             width: 20
                             height: 20
                             radius: 4
@@ -3390,9 +3407,8 @@ Panel {
                             }
                           }
 
-                          // Custom profiles: Delete button
+                          // Delete button
                           Rectangle {
-                            visible: !profRowItem.isDefaultProfile
                             width: 22
                             height: 22
                             radius: 4
@@ -3420,7 +3436,7 @@ Panel {
 
                     Text {
                       visible: !settingsFormCol.curEp || !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
-                      text: "No agent profiles configured. Click '+ Add Profile' above."
+                      text: "No custom agent profiles configured. Click '+ Add Profile' to add one."
                       font.family: root.fontFamily
                       font.pixelSize: 10
                       color: root.dimText

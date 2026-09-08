@@ -242,12 +242,12 @@ async function testSettings() {
     assert.strictEqual(mode, 0o600, `File permissions should be 0600, got ${mode.toString(8)}`);
     console.log('  ✔ save-settings passed with 0600 file permissions');
 
-    // Verify default profile immutability in saved settings
+    // Verify default profile is never saved to JSON and only custom profiles exist
     const savedData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-    assert.strictEqual(savedData.endpoints[0].profiles[0].name, 'default', 'First profile must always be "default"');
-    assert.strictEqual(savedData.endpoints[0].profiles[0].apiKey, '', 'Default profile apiKey must remain empty (inheriting endpoint)');
-    assert.strictEqual(savedData.endpoints[0].profiles.length, 2, 'Should contain default profile and custom coder profile');
-    console.log('  ✔ default profile immutability verified');
+    assert.strictEqual(savedData.endpoints[0].profiles.length, 1, 'Only custom profiles should be saved in JSON');
+    assert.strictEqual(savedData.endpoints[0].profiles[0].name, 'coder', 'Only custom coder profile should be saved');
+    assert.strictEqual(savedData.endpoints[0].profiles.some(p => p.name === 'default'), false, 'Default profile must never be saved in JSON');
+    console.log('  ✔ default profile omission from JSON verified');
 
     console.log('Testing: save-settings validation...');
     // Invalid port

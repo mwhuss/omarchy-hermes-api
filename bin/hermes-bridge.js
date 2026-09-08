@@ -619,20 +619,15 @@ async function handleGetSettings() {
       const content = fs.readFileSync(settingsPath, 'utf8');
       const data = JSON.parse(content);
       if (data && Array.isArray(data.endpoints)) {
-        // Ensure each endpoint has the immutable default profile at index 0
+        // Strip any legacy 'default' profiles; default profile is purely ornamental in UI
         data.endpoints.forEach(ep => {
           if (!Array.isArray(ep.profiles)) {
-            ep.profiles = [{ name: 'default', apiKey: '' }];
+            ep.profiles = [];
           } else {
-            const defaultIdx = ep.profiles.findIndex(p => (typeof p === 'string' ? p : p.name) === 'default');
-            if (defaultIdx === -1) {
-              ep.profiles.unshift({ name: 'default', apiKey: '' });
-            } else if (defaultIdx > 0) {
-              const def = ep.profiles.splice(defaultIdx, 1)[0];
-              ep.profiles.unshift(typeof def === 'string' ? { name: 'default', apiKey: '' } : { name: 'default', apiKey: '' });
-            } else if (typeof ep.profiles[0] === 'string') {
-              ep.profiles[0] = { name: 'default', apiKey: '' };
-            }
+            ep.profiles = ep.profiles.filter(p => {
+              const name = typeof p === 'string' ? p : (p && p.name);
+              return name && name.toLowerCase() !== 'default';
+            });
           }
         });
         console.log(JSON.stringify({
@@ -669,12 +664,7 @@ async function handleGetSettings() {
         url: defaultUrl,
         port: isNaN(defaultPort) ? 8642 : defaultPort,
         apiKey: defaultKey,
-        profiles: [
-          {
-            name: 'default',
-            apiKey: ''
-          }
-        ]
+        profiles: []
       }
     ]
   };
@@ -796,8 +786,8 @@ async function handleSaveSettings(rawInput) {
 
     const apiKey = typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
 
-    // The default profile is immutable and represents the endpoint's base hermes-agent
-    const profiles = [{ name: 'default', apiKey: '' }];
+    // Only custom profiles are saved; the default profile is ornamental in the UI and never persisted
+    const profiles = [];
     if (Array.isArray(ep.profiles)) {
       for (let j = 0; j < ep.profiles.length; j++) {
         const prof = ep.profiles[j];
@@ -810,7 +800,7 @@ async function handleSaveSettings(rawInput) {
           profKey = typeof prof.apiKey === 'string' ? prof.apiKey.trim() : '';
         }
 
-        // Skip the immutable default profile if submitted in payload (already at index 0)
+        // Never save "default" profile - it represents the built-in endpoint agent
         if (profName.toLowerCase() === 'default') {
           continue;
         }
