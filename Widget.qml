@@ -869,6 +869,16 @@ Panel {
       if (root.isSettingsOpen) root.loadSettings()
       return "ok"
     }
+    function addProfile(): string {
+      root.open()
+      root.isSettingsOpen = true
+      root.addProfileToCurrentEndpoint()
+      return "ok"
+    }
+    function saveSettings(): string {
+      root.validateAndSaveSettings()
+      return root.settingsErrorMessage || "ok"
+    }
     function openSession(sessionId: string): string {
       root.open()
       if (sessionId && String(sessionId).trim() !== "") {
@@ -996,7 +1006,7 @@ Panel {
       ep.profiles.unshift({ name: "default", apiKey: "" })
     }
     ep.profiles.push({
-      name: "profile-" + ep.profiles.length,
+      name: "",
       apiKey: ""
     })
     root.settingsEndpoints = eps
@@ -1005,12 +1015,10 @@ Panel {
 
   function updateProfileField(profIndex, field, value) {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
-    var ep = eps[root.selectedEndpointIndex]
-    if (!ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
+    var ep = root.settingsEndpoints[root.selectedEndpointIndex]
+    if (!ep || !ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
     if (profIndex === 0 || ep.profiles[profIndex].name === "default") return // immutable default profile
     ep.profiles[profIndex][field] = value
-    root.settingsEndpoints = eps
   }
 
   function deleteProfileFromCurrentEndpoint(profIndex) {
@@ -3277,11 +3285,11 @@ Panel {
 
                             Text {
                               anchors.verticalCenter: parent.verticalCenter
-                              text: "Profile Name"
+                              text: "profile name"
                               font.family: root.fontFamily
-                              font.pixelSize: 10
+                              font.pixelSize: 11
                               color: root.subtleText
-                              visible: !profRowItem.isDefaultProfile && !profNameInput.text && !profNameInput.activeFocus
+                              visible: !profRowItem.isDefaultProfile && (!profNameInput.text || profNameInput.text.length === 0)
                             }
                           }
 
@@ -3337,7 +3345,7 @@ Panel {
                               font.family: root.fontFamily
                               font.pixelSize: 10
                               color: root.subtleText
-                              visible: !profRowItem.isDefaultProfile && !profKeyInput.text && !profKeyInput.activeFocus
+                              visible: !profRowItem.isDefaultProfile && (!profKeyInput.text || profKeyInput.text.length === 0)
                             }
                           }
 
