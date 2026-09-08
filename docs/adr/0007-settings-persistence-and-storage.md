@@ -1,0 +1,3 @@
+# Settings Persistence and Storage Architecture
+
+To prevent sensitive Hermes API tokens and remote credentials from leaking into version-controlled user dotfiles (such as `~/.config/omarchy/shell.json`), endpoint and profile configurations are stored in an isolated, permission-restricted file at `~/.config/omarchy-hermes-api/settings.json` with file mode `0600`. File operations (loading, atomic writing, input validation, and directory creation) are delegated to the Node.js bridge subprocess rather than QML, ensuring robust cross-platform I/O, strict permission enforcement, and automated testability.

@@ -4,6 +4,8 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 const assert = require('assert');
 
 const bridgePath = path.join(__dirname, '..', 'bin', 'hermes-bridge.js');
@@ -199,6 +201,77 @@ async function testConcurrentStreams() {
   console.log('  ✔ concurrent streams completed independently and successfully');
 }
 
+async function testSettings() {
+  const settingsPath = path.join(os.homedir(), '.config', 'omarchy-hermes-api', 'settings.json');
+  const initialContent = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf8') : null;
+
+  try {
+    console.log('Testing: get-settings command...');
+    const getRes = await runBridge(['get-settings']);
+    assert.strictEqual(getRes.code, 0, `Exit code should be 0, got ${getRes.code}`);
+    const getJson = JSON.parse(getRes.stdout);
+    assert.strictEqual(getJson.success, true, 'get-settings should succeed');
+    assert(Array.isArray(getJson.settings.endpoints), 'settings should contain endpoints array');
+    console.log('  ✔ get-settings passed (endpoints:', getJson.settings.endpoints.length, ')');
+
+    console.log('Testing: save-settings command and permissions...');
+    const testPayload = {
+      endpoints: [
+        {
+          id: 'test-endpoint',
+          name: 'Test Endpoint',
+          url: 'http://127.0.0.1',
+          port: 8642,
+          apiKey: 'test-key',
+          profiles: [
+            { name: 'default', apiKey: '' },
+            { name: 'coder', apiKey: 'coder-key' }
+          ]
+        }
+      ]
+    };
+
+    const saveRes = await runBridge(['save-settings', JSON.stringify(testPayload)]);
+    assert.strictEqual(saveRes.code, 0, `Exit code should be 0, got ${saveRes.code}`);
+    const saveJson = JSON.parse(saveRes.stdout);
+    assert.strictEqual(saveJson.success, true, 'save-settings should succeed');
+
+    assert(fs.existsSync(settingsPath), 'settings.json must exist on disk');
+    const stat = fs.statSync(settingsPath);
+    const mode = stat.mode & 0o777;
+    assert.strictEqual(mode, 0o600, `File permissions should be 0600, got ${mode.toString(8)}`);
+    console.log('  ✔ save-settings passed with 0600 file permissions');
+
+    console.log('Testing: save-settings validation...');
+    // Invalid port
+    const invalidPortRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 99999 }]
+    })]);
+    const invalidPortJson = JSON.parse(invalidPortRes.stdout);
+    assert.strictEqual(invalidPortJson.success, false, 'invalid port should fail');
+
+    // Empty name
+    const emptyNameRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: '', url: 'http://127.0.0.1', port: 8642 }]
+    })]);
+    const emptyNameJson = JSON.parse(emptyNameRes.stdout);
+    assert.strictEqual(emptyNameJson.success, false, 'empty endpoint name should fail');
+
+    // Empty endpoints array
+    const emptyArrayRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: []
+    })]);
+    const emptyArrayJson = JSON.parse(emptyArrayRes.stdout);
+    assert.strictEqual(emptyArrayJson.success, false, 'empty endpoints array should fail');
+
+    console.log('  ✔ save-settings validation properly rejects invalid inputs');
+  } finally {
+    if (initialContent !== null) {
+      fs.writeFileSync(settingsPath, initialContent, { mode: 0o600 });
+    }
+  }
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -206,6 +279,7 @@ async function runAllTests() {
 
   try {
     await testManifest();
+    await testSettings();
     await testStatus();
     await testListSessions();
     await testGetSession();
