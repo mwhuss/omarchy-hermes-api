@@ -40,12 +40,39 @@ function loadHermesEnvFile() {
   return vars;
 }
 
+function getSettingsPath() {
+  return path.join(os.homedir(), '.config', 'omarchy-hermes-api', 'settings.json');
+}
+
+function loadSettingsFile() {
+  const settingsPath = getSettingsPath();
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const content = fs.readFileSync(settingsPath, 'utf8');
+      const parsed = JSON.parse(content);
+      if (parsed && Array.isArray(parsed.endpoints)) {
+        return parsed;
+      }
+    } catch (e) {
+      // Ignore reading / parsing errors
+    }
+  }
+  return null;
+}
+
 function resolveConfig() {
   const hermesEnv = loadHermesEnvFile();
+  const settings = loadSettingsFile();
 
-  const defaultPort = process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642';
+  let targetEndpoint = null;
+  if (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0) {
+    targetEndpoint = settings.endpoints[0];
+  }
+
+  // Precedence: explicit env vars > settings.json > ~/.hermes/.env > default 8642
+  const defaultPort = process.env.HERMES_API_SERVER_PORT || (targetEndpoint && targetEndpoint.port ? String(targetEndpoint.port) : null) || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642';
   
-  let rawUrl = process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL || `http://127.0.0.1:${defaultPort}`;
+  let rawUrl = process.env.HERMES_API_SERVER_URL || (targetEndpoint && targetEndpoint.url ? targetEndpoint.url : null) || hermesEnv.API_SERVER_URL || `http://127.0.0.1:${defaultPort}`;
 
   // Normalize protocol if missing
   if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
@@ -68,8 +95,8 @@ function resolveConfig() {
   let rootUrl = parsedUrl.origin;
   let baseUrl = `${rootUrl}/v1`;
 
-  const apiKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || 'dummy-key';
-  const serverName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
+  const apiKey = process.env.HERMES_API_SERVER_KEY || (targetEndpoint && targetEndpoint.apiKey ? targetEndpoint.apiKey : null) || hermesEnv.API_SERVER_KEY || 'dummy-key';
+  const serverName = process.env.HERMES_API_SERVER_NAME || (targetEndpoint && targetEndpoint.name ? targetEndpoint.name : null) || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
 
   return {
     rootUrl,
@@ -585,6 +612,249 @@ async function handleRenameSession(sessionId, newTitle) {
   }
 }
 
+async function handleGetSettings() {
+  const settingsPath = getSettingsPath();
+  if (fs.existsSync(settingsPath)) {
+    try {
+      const content = fs.readFileSync(settingsPath, 'utf8');
+      const data = JSON.parse(content);
+      if (data && Array.isArray(data.endpoints)) {
+        // Strip any legacy 'default' profiles; default profile is purely ornamental in UI
+        data.endpoints.forEach(ep => {
+          if (!Array.isArray(ep.profiles)) {
+            ep.profiles = [];
+          } else {
+            ep.profiles = ep.profiles.filter(p => {
+              const name = typeof p === 'string' ? p : (p && p.name);
+              return name && name.toLowerCase() !== 'default';
+            });
+          }
+        });
+        console.log(JSON.stringify({
+          success: true,
+          seeded: false,
+          settings: data
+        }));
+        return;
+      }
+    } catch (e) {
+      // Fall through to seeded fallback
+    }
+  }
+
+  // Seed default settings from active environment / ~/.hermes/.env
+  const hermesEnv = loadHermesEnvFile();
+  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10);
+  let rawUrl = process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL || 'http://127.0.0.1';
+  let defaultUrl = rawUrl;
+  try {
+    const p = new URL(rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? rawUrl : `http://${rawUrl}`);
+    defaultUrl = `${p.protocol}//${p.hostname}`;
+  } catch (e) {
+    defaultUrl = 'http://127.0.0.1';
+  }
+  const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
+  const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
+
+  const seededSettings = {
+    endpoints: [
+      {
+        id: 'endpoint-default',
+        name: defaultName,
+        url: defaultUrl,
+        port: isNaN(defaultPort) ? 8642 : defaultPort,
+        apiKey: defaultKey,
+        profiles: []
+      }
+    ]
+  };
+
+  console.log(JSON.stringify({
+    success: true,
+    seeded: true,
+    settings: seededSettings
+  }));
+}
+
+async function handleSaveSettings(rawInput) {
+  let jsonString = rawInput;
+  if (!jsonString || jsonString === '--stdin') {
+    try {
+      jsonString = fs.readFileSync(0, 'utf8');
+    } catch (e) {
+      // stdin read failed
+    }
+  }
+
+  if (!jsonString || !jsonString.trim()) {
+    console.log(JSON.stringify({
+      success: false,
+      error: 'No settings data provided to save'
+    }));
+    return;
+  }
+
+  let data;
+  try {
+    data = JSON.parse(jsonString);
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Invalid JSON format: ${err.message}`
+    }));
+    return;
+  }
+
+  if (!data || !Array.isArray(data.endpoints)) {
+    console.log(JSON.stringify({
+      success: false,
+      error: 'Settings must contain an "endpoints" array'
+    }));
+    return;
+  }
+
+  if (data.endpoints.length === 0) {
+    console.log(JSON.stringify({
+      success: false,
+      error: 'At least one endpoint is required'
+    }));
+    return;
+  }
+
+  const validatedEndpoints = [];
+  for (let i = 0; i < data.endpoints.length; i++) {
+    const ep = data.endpoints[i];
+    if (!ep || typeof ep !== 'object') {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint #${i + 1} must be a valid object`
+      }));
+      return;
+    }
+
+    const name = typeof ep.name === 'string' ? ep.name.trim() : '';
+    if (!name) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint #${i + 1} display name is required`
+      }));
+      return;
+    }
+
+    let url = typeof ep.url === 'string' ? ep.url.trim() : '';
+    if (!url) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" URL is required`
+      }));
+      return;
+    }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = `http://${url}`;
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch (err) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" has an invalid URL format: ${ep.url}`
+      }));
+      return;
+    }
+
+    const cleanUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}`;
+
+    let port = ep.port !== undefined && ep.port !== null ? parseInt(ep.port, 10) : 8642;
+    if (parsedUrl.port && (!ep.port || ep.port === 8642)) {
+      port = parseInt(parsedUrl.port, 10);
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" port must be an integer between 1 and 65535 (got ${ep.port})`
+      }));
+      return;
+    }
+
+    const id = ep.id && typeof ep.id === 'string' && ep.id.trim()
+      ? ep.id.trim()
+      : `endpoint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    const apiKey = typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
+
+    // Only custom profiles are saved; the default profile is ornamental in the UI and never persisted
+    const profiles = [];
+    if (Array.isArray(ep.profiles)) {
+      for (let j = 0; j < ep.profiles.length; j++) {
+        const prof = ep.profiles[j];
+        let profName = '';
+        let profKey = '';
+        if (typeof prof === 'string') {
+          profName = prof.trim();
+        } else if (prof && typeof prof === 'object') {
+          profName = typeof prof.name === 'string' ? prof.name.trim() : '';
+          profKey = typeof prof.apiKey === 'string' ? prof.apiKey.trim() : '';
+        }
+
+        // Never save "default" profile - it represents the built-in endpoint agent
+        if (profName.toLowerCase() === 'default') {
+          continue;
+        }
+
+        if (!profName) {
+          console.log(JSON.stringify({
+            success: false,
+            error: `Profile #${j + 1} in endpoint "${name}" must have a name`
+          }));
+          return;
+        }
+        profiles.push({ name: profName, apiKey: profKey });
+      }
+    }
+
+    validatedEndpoints.push({
+      id,
+      name,
+      url: cleanUrl,
+      port,
+      apiKey,
+      profiles
+    });
+  }
+
+  const cleanSettings = {
+    endpoints: validatedEndpoints
+  };
+
+  try {
+    const settingsPath = getSettingsPath();
+    const configDir = path.dirname(settingsPath);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    }
+
+    const tmpPath = path.join(configDir, `settings.json.tmp.${process.pid}.${Date.now()}`);
+    fs.writeFileSync(tmpPath, JSON.stringify(cleanSettings, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, settingsPath);
+    fs.chmodSync(settingsPath, 0o600);
+
+    console.log(JSON.stringify({
+      success: true,
+      settings: cleanSettings
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to write settings file: ${err.message}`
+    }));
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || 'status';
@@ -608,6 +878,14 @@ async function main() {
 
     case 'delete-session':
       await handleDeleteSession(args[1]);
+      break;
+
+    case 'get-settings':
+      await handleGetSettings();
+      break;
+
+    case 'save-settings':
+      await handleSaveSettings(args[1]);
       break;
 
     case 'stream-chat': {
@@ -658,7 +936,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-sessions, get-session, delete-session, stream-chat`
+        error: `Unknown command: ${command}. Available: status, list-sessions, get-session, delete-session, stream-chat, get-settings, save-settings`
       }));
       process.exit(1);
   }

@@ -52,3 +52,19 @@ _Avoid_: Local storage, message buffer, memory store
 The dynamic sorting of the Session List where the most recently active Hermes Session (whether from local user submissions, assistant turns, or external sources) is positioned at the top.
 _Avoid_: Sorting by date, list shuffle, chronological view
 
+**Hermes Endpoint**:
+A configured network target (URL, port, API key, display name) running an instance of the Hermes Agent API.
+_Avoid_: Host, server instance, backend URL
+
+**Agent Profile**:
+A named persona or operational scope within a Hermes Endpoint with its own route and credentials. Each Hermes Endpoint possesses an inherent default Agent Profile representing the endpoint's base `hermes-agent` and credentials, which is rendered ornamentally in the Settings View and is never saved to the Endpoint Configuration File.
+_Avoid_: Bot persona, flavor, agent role
+
+**Settings View**:
+The overlay configuration interface within the Omarchy Plugin where Hermes Endpoints and Agent Profiles are managed.
+_Avoid_: Preferences dialog, config window, options panel
+
+**Endpoint Configuration File**:
+The permission-restricted (`0600`) JSON file storing persistent Hermes Endpoints and Agent Profiles at `~/.config/omarchy-hermes-api/settings.json`.
+_Avoid_: Dotfile, plugin config, shell JSON
+

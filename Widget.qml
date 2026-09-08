@@ -28,6 +28,15 @@ Panel {
   property string statusError: ""
   property string serverName: (typeof Quickshell !== "undefined" && typeof Quickshell.env === "function" && Quickshell.env("HERMES_API_SERVER_NAME")) || "Hermes"
 
+  // Settings state
+  property bool isSettingsOpen: false
+  property var settingsEndpoints: []
+  property int selectedEndpointIndex: 0
+  property bool isConfirmingDeleteEndpoint: false
+  property string settingsErrorMessage: ""
+  property string settingsSuccessMessage: ""
+  property bool maskEndpointApiKey: true
+
   // Session state
   property var sessions: []
   property var filteredSessions: []
@@ -107,6 +116,20 @@ Panel {
   }
 
   Timer {
+    id: settingsSuccessTimer
+    interval: 3500
+    repeat: false
+    onTriggered: root.settingsSuccessMessage = ""
+  }
+
+  Timer {
+    id: endpointDeleteConfirmTimer
+    interval: 5000
+    running: root.isConfirmingDeleteEndpoint
+    onTriggered: root.isConfirmingDeleteEndpoint = false
+  }
+
+  Timer {
     id: scrollSnapTimer
     interval: 50
     repeat: false
@@ -144,9 +167,13 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       root.isConfirmingDeleteSession = false
+      root.isConfirmingDeleteEndpoint = false
+      root.settingsErrorMessage = ""
+      root.settingsSuccessMessage = ""
       triggerRefresh()
+      root.loadSettings()
       Qt.callLater(function() {
-        if (promptInput) promptInput.forceActiveFocus()
+        if (!root.isSettingsOpen && promptInput) promptInput.forceActiveFocus()
       })
     }
   }
@@ -826,6 +853,32 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function openSettings(): string {
+      root.open()
+      root.isSettingsOpen = true
+      root.loadSettings()
+      return "ok"
+    }
+    function closeSettings(): string {
+      root.isSettingsOpen = false
+      return "ok"
+    }
+    function toggleSettings(): string {
+      root.open()
+      root.isSettingsOpen = !root.isSettingsOpen
+      if (root.isSettingsOpen) root.loadSettings()
+      return "ok"
+    }
+    function addProfile(): string {
+      root.open()
+      root.isSettingsOpen = true
+      root.addProfileToCurrentEndpoint()
+      return "ok"
+    }
+    function saveSettings(): string {
+      root.validateAndSaveSettings()
+      return root.settingsErrorMessage || "ok"
+    }
     function openSession(sessionId: string): string {
       root.open()
       if (sessionId && String(sessionId).trim() !== "") {
@@ -856,6 +909,170 @@ Panel {
       root.postCompletionNotification("Test response from " + root.serverName, false, root.selectedSessionId)
       return "ok"
     }
+  }
+
+  // ------------------------------------------------------------- Settings Management
+
+  function loadSettings() {
+    root.settingsErrorMessage = ""
+    root.settingsSuccessMessage = ""
+    root.isConfirmingDeleteEndpoint = false
+    getSettingsProc.command = ["node", root.scriptPath, "get-settings"]
+    getSettingsProc.running = true
+  }
+
+  function parseSettings(text) {
+    if (!text || String(text).trim() === "") return
+    try {
+      var data = JSON.parse(text)
+      if (data && data.success && data.settings && Array.isArray(data.settings.endpoints)) {
+        var eps = JSON.parse(JSON.stringify(data.settings.endpoints))
+        root.settingsEndpoints = eps
+        if (root.selectedEndpointIndex >= eps.length) {
+          root.selectedEndpointIndex = Math.max(0, eps.length - 1)
+        }
+      }
+    } catch (e) {
+      console.warn("hermes-bridge/get-settings parse error:", e)
+    }
+  }
+
+  function parseSaveSettingsResult(text) {
+    if (!text || String(text).trim() === "") return
+    try {
+      var data = JSON.parse(text)
+      if (data && data.success) {
+        root.settingsErrorMessage = ""
+        root.settingsSuccessMessage = "Settings saved successfully"
+        settingsSuccessTimer.restart()
+        if (data.settings && Array.isArray(data.settings.endpoints)) {
+          root.settingsEndpoints = JSON.parse(JSON.stringify(data.settings.endpoints))
+          if (root.settingsEndpoints.length > 0) {
+            var activeEp = root.settingsEndpoints[0]
+            root.serverName = activeEp.name || "Hermes"
+          }
+        }
+        root.triggerRefresh()
+      } else {
+        root.settingsErrorMessage = (data && data.error) ? data.error : "Failed to save settings"
+      }
+    } catch (e) {
+      root.settingsErrorMessage = "Error parsing save response: " + e
+    }
+  }
+
+  function updateEndpointField(index, field, value) {
+    if (index < 0 || index >= root.settingsEndpoints.length) return
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    eps[index][field] = value
+    root.settingsEndpoints = eps
+  }
+
+  function addEndpoint() {
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var newEp = {
+      id: "endpoint-" + Date.now(),
+      name: "New Endpoint",
+      url: "http://127.0.0.1",
+      port: 8642,
+      apiKey: "",
+      profiles: []
+    }
+    eps.push(newEp)
+    root.settingsEndpoints = eps
+    root.selectedEndpointIndex = eps.length - 1
+    root.isConfirmingDeleteEndpoint = false
+    root.settingsErrorMessage = ""
+  }
+
+  function deleteCurrentEndpoint() {
+    if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    eps.splice(root.selectedEndpointIndex, 1)
+    root.settingsEndpoints = eps
+    root.selectedEndpointIndex = Math.max(0, Math.min(root.selectedEndpointIndex, eps.length - 1))
+    root.isConfirmingDeleteEndpoint = false
+    root.settingsErrorMessage = ""
+  }
+
+  function addProfileToCurrentEndpoint() {
+    if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var ep = eps[root.selectedEndpointIndex]
+    if (!ep.profiles) ep.profiles = []
+    ep.profiles.push({
+      name: "",
+      apiKey: ""
+    })
+    root.settingsEndpoints = eps
+    root.settingsErrorMessage = ""
+  }
+
+  function updateProfileField(profIndex, field, value) {
+    if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
+    var ep = root.settingsEndpoints[root.selectedEndpointIndex]
+    if (!ep || !ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
+    ep.profiles[profIndex][field] = value
+  }
+
+  function deleteProfileFromCurrentEndpoint(profIndex) {
+    if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var ep = eps[root.selectedEndpointIndex]
+    if (!ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
+    ep.profiles.splice(profIndex, 1)
+    root.settingsEndpoints = eps
+    root.settingsErrorMessage = ""
+  }
+
+  function validateAndSaveSettings() {
+    root.settingsErrorMessage = ""
+    if (!root.settingsEndpoints || root.settingsEndpoints.length === 0) {
+      root.settingsErrorMessage = "At least one endpoint is required."
+      return
+    }
+
+    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    for (var i = 0; i < eps.length; i++) {
+      var ep = eps[i]
+      var name = (ep.name || "").trim()
+      if (!name) {
+        root.settingsErrorMessage = "Endpoint #" + (i + 1) + " display name cannot be empty."
+        return
+      }
+      var url = (ep.url || "").trim()
+      if (!url) {
+        root.settingsErrorMessage = "Endpoint '" + name + "' URL cannot be empty."
+        return
+      }
+      var port = parseInt(ep.port, 10)
+      if (isNaN(port) || port < 1 || port > 65535) {
+        root.settingsErrorMessage = "Endpoint '" + name + "' port must be between 1 and 65535."
+        return
+      }
+      if (ep.profiles) {
+        // Strip any 'default' profile - default profile is purely ornamental in UI and never saved
+        ep.profiles = ep.profiles.filter(function(p) {
+          return p && p.name && p.name.trim().toLowerCase() !== "default"
+        })
+        for (var j = 0; j < ep.profiles.length; j++) {
+          var profName = (ep.profiles[j].name || "").trim()
+          if (!profName) {
+            root.settingsErrorMessage = "Profile #" + (j + 1) + " in endpoint '" + name + "' must have a name."
+            return
+          }
+          if (profName.toLowerCase() === "default") {
+            root.settingsErrorMessage = "Profile name 'default' is reserved for the endpoint hermes-agent."
+            return
+          }
+        }
+      } else {
+        ep.profiles = []
+      }
+    }
+
+    saveSettingsProc.command = ["node", root.scriptPath, "save-settings", JSON.stringify({ endpoints: eps })]
+    saveSettingsProc.running = true
   }
 
   // ------------------------------------------------------------- Processes
@@ -939,6 +1156,42 @@ Panel {
       id: renameStdout
       waitForEnd: true
       onStreamFinished: root.refreshSessions()
+    }
+  }
+
+  Process {
+    id: getSettingsProc
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: getSettingsStdout
+      waitForEnd: true
+      onStreamFinished: root.parseSettings(getSettingsStdout.text)
+    }
+    stderr: StdioCollector {
+      id: getSettingsStderr
+      waitForEnd: true
+      onStreamFinished: {
+        if (getSettingsStderr.text && getSettingsStderr.text.trim()) console.warn("hermes-bridge/get-settings stderr:", getSettingsStderr.text)
+      }
+    }
+  }
+
+  Process {
+    id: saveSettingsProc
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: saveSettingsStdout
+      waitForEnd: true
+      onStreamFinished: root.parseSaveSettingsResult(saveSettingsStdout.text)
+    }
+    stderr: StdioCollector {
+      id: saveSettingsStderr
+      waitForEnd: true
+      onStreamFinished: {
+        if (saveSettingsStderr.text && saveSettingsStderr.text.trim()) console.warn("hermes-bridge/save-settings stderr:", saveSettingsStderr.text)
+      }
     }
   }
 
@@ -1071,7 +1324,10 @@ Panel {
         }
       }
       onCloseRequested: {
-        if (root.isConfirmingDeleteSession) {
+        if (root.isSettingsOpen) {
+          root.isSettingsOpen = false
+          root.loadSettings()
+        } else if (root.isConfirmingDeleteSession) {
           root.isConfirmingDeleteSession = false
         } else if (root.isEditingTitle) {
           root.isEditingTitle = false
@@ -1104,7 +1360,7 @@ Panel {
             }
 
             Text {
-              text: root.serverName
+              text: root.isSettingsOpen ? (root.serverName + " • Settings") : root.serverName
               font.family: root.fontFamily
               font.pixelSize: 14
               font.weight: Font.Bold
@@ -1135,7 +1391,10 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.startNewSession()
+                onClicked: {
+                  if (root.isSettingsOpen) root.isSettingsOpen = false
+                  root.startNewSession()
+                }
               }
 
               RowLayout {
@@ -1194,6 +1453,38 @@ Panel {
                 }
               }
             }
+
+            // Settings button
+            Rectangle {
+              width: 28
+              height: 28
+              radius: 6
+              color: root.isSettingsOpen
+                ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+                : (settingsHover.containsMouse ? root.cardHover : "transparent")
+              border.color: root.isSettingsOpen ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.4) : "transparent"
+
+              MouseArea {
+                id: settingsHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.isSettingsOpen = !root.isSettingsOpen
+                  if (root.isSettingsOpen) {
+                    root.loadSettings()
+                  }
+                }
+              }
+
+              Text {
+                anchors.centerIn: parent
+                text: "\uF013" // Gear icon
+                font.family: root.fontFamily
+                font.pixelSize: 12
+                color: root.isSettingsOpen ? root.accent : (settingsHover.containsMouse ? root.foreground : root.dimText)
+              }
+            }
           }
         }
 
@@ -1204,6 +1495,7 @@ Panel {
 
         // ------------------------- Dual-Pane Body
         RowLayout {
+          visible: !root.isSettingsOpen
           Layout.fillWidth: true
           Layout.fillHeight: true
           spacing: 0
@@ -2339,6 +2631,962 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: 12
                     color: root.isCurrentSessionStreaming ? (sendHover.containsMouse ? "#FFFFFF" : "#EF4444") : "#FFFFFF"
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // ==================== Settings View (Master-Detail)
+        RowLayout {
+          visible: root.isSettingsOpen
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          spacing: 0
+
+          // -------------------- Left Sidebar: Endpoints List
+          Rectangle {
+            Layout.fillHeight: true
+            Layout.preferredWidth: 220
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.02)
+
+            ColumnLayout {
+              anchors.fill: parent
+              anchors.margins: 10
+              spacing: 8
+
+              // Header: Endpoints + Add Button
+              RowLayout {
+                Layout.fillWidth: true
+
+                Text {
+                  text: "Endpoints"
+                  font.family: root.fontFamily
+                  font.pixelSize: 12
+                  font.weight: Font.Bold
+                  color: root.foreground
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Rectangle {
+                  height: 24
+                  radius: 4
+                  color: addEpHover.containsMouse ? root.cardHover : root.cardBg
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+                  implicitWidth: addEpRow.implicitWidth + 12
+
+                  MouseArea {
+                    id: addEpHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.addEndpoint()
+                  }
+
+                  RowLayout {
+                    id: addEpRow
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    Text {
+                      text: "\uF067" // Plus
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: root.accent
+                    }
+
+                    Text {
+                      text: "Add"
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      font.weight: Font.Medium
+                      color: root.foreground
+                    }
+                  }
+                }
+              }
+
+              // Scrollable list of endpoints
+              Flickable {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: width
+                contentHeight: epListCol.implicitHeight
+                clip: true
+
+                ColumnLayout {
+                  id: epListCol
+                  width: parent.width
+                  spacing: 4
+
+                  Repeater {
+                    model: root.settingsEndpoints
+                    delegate: Rectangle {
+                      id: epCard
+                      Layout.fillWidth: true
+                      height: 48
+                      radius: 6
+                      color: root.selectedEndpointIndex === index
+                        ? root.userBubbleBg
+                        : (epCardHover.containsMouse ? root.cardHover : root.cardBg)
+                      border.color: root.selectedEndpointIndex === index
+                        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+                      MouseArea {
+                        id: epCardHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.selectedEndpointIndex = index
+                          root.isConfirmingDeleteEndpoint = false
+                          root.settingsErrorMessage = ""
+                        }
+                      }
+
+                      ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        spacing: 2
+
+                        Text {
+                          text: modelData.name || "Untitled Endpoint"
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          font.weight: Font.Medium
+                          color: root.foreground
+                          elide: Text.ElideRight
+                          Layout.fillWidth: true
+                        }
+
+                        Text {
+                          text: (modelData.url || "http://127.0.0.1") + (modelData.port ? (":" + modelData.port) : "")
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          color: root.dimText
+                          elide: Text.ElideRight
+                          Layout.fillWidth: true
+                        }
+                      }
+                    }
+                  }
+
+                  Item {
+                    visible: !root.settingsEndpoints || root.settingsEndpoints.length === 0
+                    Layout.fillWidth: true
+                    height: 100
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: "No endpoints\nClick + Add"
+                      font.family: root.fontFamily
+                      font.pixelSize: 11
+                      color: root.dimText
+                      horizontalAlignment: Text.AlignHCenter
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Pane divider
+          Rectangle {
+            Layout.fillHeight: true
+            width: 1
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          }
+
+          // -------------------- Right Editor Pane
+          ColumnLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
+            // Scrollable form content
+            Flickable {
+              id: settingsFormFlick
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              contentWidth: width
+              contentHeight: settingsFormCol.implicitHeight + 20
+              clip: true
+
+              ColumnLayout {
+                id: settingsFormCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: 14
+                spacing: 12
+
+                readonly property var curEp: (root.settingsEndpoints && root.selectedEndpointIndex >= 0 && root.selectedEndpointIndex < root.settingsEndpoints.length)
+                  ? root.settingsEndpoints[root.selectedEndpointIndex]
+                  : null
+
+                // Empty selection placeholder
+                Item {
+                  visible: !settingsFormCol.curEp
+                  Layout.fillWidth: true
+                  height: 200
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: "Select an endpoint on the left or click '+ Add' to create one."
+                    font.family: root.fontFamily
+                    font.pixelSize: 12
+                    color: root.dimText
+                  }
+                }
+
+                // Active Endpoint Form
+                ColumnLayout {
+                  visible: !!settingsFormCol.curEp
+                  Layout.fillWidth: true
+                  spacing: 12
+
+                  // Header: Section title and Delete Endpoint button
+                  RowLayout {
+                    Layout.fillWidth: true
+
+                    Text {
+                      text: "Endpoint Configuration"
+                      font.family: root.fontFamily
+                      font.pixelSize: 12
+                      font.weight: Font.Bold
+                      color: root.foreground
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    // Delete Endpoint Button (2-step confirmation)
+                    Rectangle {
+                      height: 26
+                      radius: 4
+                      color: root.isConfirmingDeleteEndpoint
+                        ? (delEpHover.containsMouse ? "#DC2626" : "#EF4444")
+                        : (delEpHover.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent")
+                      border.color: root.isConfirmingDeleteEndpoint ? "#EF4444" : Qt.rgba(239/255, 68/255, 68/255, 0.3)
+                      implicitWidth: delEpRow.implicitWidth + 12
+
+                      MouseArea {
+                        id: delEpHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          if (root.isConfirmingDeleteEndpoint) {
+                            root.deleteCurrentEndpoint()
+                          } else {
+                            root.isConfirmingDeleteEndpoint = true
+                          }
+                        }
+                      }
+
+                      RowLayout {
+                        id: delEpRow
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                          text: "\uF1F8" // Trash
+                          font.family: root.fontFamily
+                          font.pixelSize: 10
+                          color: root.isConfirmingDeleteEndpoint ? "#FFFFFF" : "#EF4444"
+                        }
+
+                        Text {
+                          text: root.isConfirmingDeleteEndpoint ? "Confirm Delete?" : "Delete Endpoint"
+                          font.family: root.fontFamily
+                          font.pixelSize: 10
+                          font.weight: Font.Medium
+                          color: root.isConfirmingDeleteEndpoint ? "#FFFFFF" : "#EF4444"
+                        }
+                      }
+                    }
+                  }
+
+                  // Display Name Field
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Text {
+                      text: "Display Name"
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      font.weight: Font.Medium
+                      color: root.dimText
+                    }
+
+                    Rectangle {
+                      Layout.fillWidth: true
+                      height: 30
+                      radius: 6
+                      color: root.cardBg
+                      border.color: epNameInput.activeFocus
+                        ? root.accent
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                      TextInput {
+                        id: epNameInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        verticalAlignment: TextInput.AlignVCenter
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        color: root.foreground
+                        clip: true
+                        text: settingsFormCol.curEp ? (settingsFormCol.curEp.name || "") : ""
+                        onTextChanged: {
+                          if (activeFocus && settingsFormCol.curEp) {
+                            root.updateEndpointField(root.selectedEndpointIndex, "name", text)
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // URL & Port Row
+                  RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    // URL
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      spacing: 4
+
+                      Text {
+                        text: "URL (e.g. http://127.0.0.1)"
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        font.weight: Font.Medium
+                        color: root.dimText
+                      }
+
+                      Rectangle {
+                        Layout.fillWidth: true
+                        height: 30
+                        radius: 6
+                        color: root.cardBg
+                        border.color: epUrlInput.activeFocus
+                          ? root.accent
+                          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                        TextInput {
+                          id: epUrlInput
+                          anchors.fill: parent
+                          anchors.leftMargin: 8
+                          anchors.rightMargin: 8
+                          verticalAlignment: TextInput.AlignVCenter
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          color: root.foreground
+                          clip: true
+                          text: settingsFormCol.curEp ? (settingsFormCol.curEp.url || "") : ""
+                          onTextChanged: {
+                            if (activeFocus && settingsFormCol.curEp) {
+                              root.updateEndpointField(root.selectedEndpointIndex, "url", text)
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    // Port
+                    ColumnLayout {
+                      Layout.preferredWidth: 80
+                      spacing: 4
+
+                      Text {
+                        text: "Port"
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        font.weight: Font.Medium
+                        color: root.dimText
+                      }
+
+                      Rectangle {
+                        Layout.fillWidth: true
+                        height: 30
+                        radius: 6
+                        color: root.cardBg
+                        border.color: epPortInput.activeFocus
+                          ? root.accent
+                          : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                        TextInput {
+                          id: epPortInput
+                          anchors.fill: parent
+                          anchors.leftMargin: 8
+                          anchors.rightMargin: 8
+                          verticalAlignment: TextInput.AlignVCenter
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          color: root.foreground
+                          clip: true
+                          text: settingsFormCol.curEp ? String(settingsFormCol.curEp.port || 8642) : "8642"
+                          onTextChanged: {
+                            if (activeFocus && settingsFormCol.curEp) {
+                              root.updateEndpointField(root.selectedEndpointIndex, "port", text)
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Endpoint API Key Field
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+
+                    Text {
+                      text: "Endpoint API Key"
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      font.weight: Font.Medium
+                      color: root.dimText
+                    }
+
+                    Rectangle {
+                      Layout.fillWidth: true
+                      height: 30
+                      radius: 6
+                      color: root.cardBg
+                      border.color: epKeyInput.activeFocus
+                        ? root.accent
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                      RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 6
+                        spacing: 6
+
+                        TextInput {
+                          id: epKeyInput
+                          Layout.fillWidth: true
+                          Layout.fillHeight: true
+                          verticalAlignment: TextInput.AlignVCenter
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          color: root.foreground
+                          echoMode: root.maskEndpointApiKey ? TextInput.Password : TextInput.Normal
+                          clip: true
+                          text: settingsFormCol.curEp ? (settingsFormCol.curEp.apiKey || "") : ""
+                          onTextChanged: {
+                            if (activeFocus && settingsFormCol.curEp) {
+                              root.updateEndpointField(root.selectedEndpointIndex, "apiKey", text)
+                            }
+                          }
+                        }
+
+                        Rectangle {
+                          width: 20
+                          height: 20
+                          radius: 4
+                          color: eyeHover.containsMouse ? root.cardHover : "transparent"
+
+                          MouseArea {
+                            id: eyeHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: root.maskEndpointApiKey = !root.maskEndpointApiKey
+                          }
+
+                          Text {
+                            anchors.centerIn: parent
+                            text: root.maskEndpointApiKey ? "\uF070" : "\uF06E"
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            color: eyeHover.containsMouse ? root.foreground : root.dimText
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  // Divider
+                  Rectangle {
+                    Layout.fillWidth: true
+                    height: 1
+                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                  }
+
+                  // Agent Profiles Section Header
+                  RowLayout {
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                      spacing: 2
+                      Text {
+                        text: "Agent Profiles"
+                        font.family: root.fontFamily
+                        font.pixelSize: 12
+                        font.weight: Font.Bold
+                        color: root.foreground
+                      }
+                      Text {
+                        text: "Profiles inherit the endpoint key unless overridden"
+                        font.family: root.fontFamily
+                        font.pixelSize: 9
+                        color: root.dimText
+                      }
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Rectangle {
+                      height: 24
+                      radius: 4
+                      color: addProfHover.containsMouse ? root.cardHover : root.cardBg
+                      border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+                      implicitWidth: addProfRow.implicitWidth + 12
+
+                      MouseArea {
+                        id: addProfHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.addProfileToCurrentEndpoint()
+                      }
+
+                      RowLayout {
+                        id: addProfRow
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                          text: "\uF067"
+                          font.family: root.fontFamily
+                          font.pixelSize: 10
+                          color: root.accent
+                        }
+
+                        Text {
+                          text: "Add Profile"
+                          font.family: root.fontFamily
+                          font.pixelSize: 10
+                          font.weight: Font.Medium
+                          color: root.foreground
+                        }
+                      }
+                    }
+                  }
+
+                  // Profiles List
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    // Ornamental Default Profile (Purely visual representation of the endpoint's base hermes-agent)
+                    Rectangle {
+                      Layout.fillWidth: true
+                      height: 38
+                      radius: 6
+                      color: root.cardBg
+                      border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
+
+                      RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 8
+
+                        // Name & badge
+                        Rectangle {
+                          Layout.preferredWidth: 150
+                          Layout.fillHeight: true
+                          color: "transparent"
+
+                          RowLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            Text {
+                              text: "default"
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              font.weight: Font.DemiBold
+                              color: root.foreground
+                            }
+
+                            Rectangle {
+                              radius: 3
+                              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                              border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                              implicitWidth: defaultBadgeText.implicitWidth + 8
+                              implicitHeight: 16
+
+                              Text {
+                                id: defaultBadgeText
+                                anchors.centerIn: parent
+                                text: "hermes-agent"
+                                font.family: root.fontFamily
+                                font.pixelSize: 9
+                                font.weight: Font.Medium
+                                color: root.accent
+                              }
+                            }
+
+                            Item { Layout.fillWidth: true }
+                          }
+                        }
+
+                        Rectangle {
+                          Layout.fillHeight: true
+                          width: 1
+                          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                        }
+
+                        // Credentials representation
+                        Item {
+                          Layout.fillWidth: true
+                          Layout.fillHeight: true
+
+                          RowLayout {
+                            anchors.fill: parent
+                            spacing: 6
+
+                            Text {
+                              Layout.fillWidth: true
+                              text: "Inherits endpoint credentials"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.dimText
+                              elide: Text.ElideRight
+                            }
+                          }
+                        }
+
+                        // Lock indicator (immutable)
+                        Rectangle {
+                          width: 22
+                          height: 22
+                          color: "transparent"
+
+                          Text {
+                            anchors.centerIn: parent
+                            text: "\uF023" // Lock icon
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            color: root.dimText
+                          }
+                        }
+                      }
+                    }
+
+                    // Custom Profiles Repeater
+                    Repeater {
+                      model: (settingsFormCol.curEp && settingsFormCol.curEp.profiles) ? settingsFormCol.curEp.profiles : []
+                      delegate: Rectangle {
+                        id: profRowItem
+                        Layout.fillWidth: true
+                        height: 38
+                        radius: 6
+                        color: root.cardBg
+                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+                        property bool maskProfKey: true
+
+                        RowLayout {
+                          anchors.fill: parent
+                          anchors.leftMargin: 8
+                          anchors.rightMargin: 8
+                          spacing: 8
+
+                          // Profile Name
+                          Rectangle {
+                            Layout.preferredWidth: 150
+                            Layout.fillHeight: true
+                            color: "transparent"
+
+                            TextInput {
+                              id: profNameInput
+                              anchors.fill: parent
+                              verticalAlignment: TextInput.AlignVCenter
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              color: root.foreground
+                              clip: true
+                              text: modelData ? (modelData.name || "") : ""
+                              onTextChanged: {
+                                if (activeFocus) {
+                                  root.updateProfileField(index, "name", text)
+                                }
+                              }
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: "profile name"
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              color: root.subtleText
+                              visible: !profNameInput.text || profNameInput.text.length === 0
+                            }
+                          }
+
+                          Rectangle {
+                            Layout.fillHeight: true
+                            width: 1
+                            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                          }
+
+                          // Profile API Key
+                          Item {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+
+                            TextInput {
+                              id: profKeyInput
+                              anchors.fill: parent
+                              verticalAlignment: TextInput.AlignVCenter
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              color: root.foreground
+                              clip: true
+                              echoMode: profRowItem.maskProfKey ? TextInput.Password : TextInput.Normal
+                              text: modelData ? (modelData.apiKey || "") : ""
+                              onTextChanged: {
+                                if (activeFocus) {
+                                  root.updateProfileField(index, "apiKey", text)
+                                }
+                              }
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              text: "Inherited from Endpoint"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.subtleText
+                              visible: !profKeyInput.text || profKeyInput.text.length === 0
+                            }
+                          }
+
+                          // Toggle eye
+                          Rectangle {
+                            width: 20
+                            height: 20
+                            radius: 4
+                            color: profEyeHover.containsMouse ? root.cardHover : "transparent"
+
+                            MouseArea {
+                              id: profEyeHover
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: profRowItem.maskProfKey = !profRowItem.maskProfKey
+                            }
+
+                            Text {
+                              anchors.centerIn: parent
+                              text: profRowItem.maskProfKey ? "\uF070" : "\uF06E"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: profEyeHover.containsMouse ? root.foreground : root.dimText
+                            }
+                          }
+
+                          // Delete button
+                          Rectangle {
+                            width: 22
+                            height: 22
+                            radius: 4
+                            color: profDelHover.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent"
+
+                            MouseArea {
+                              id: profDelHover
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: root.deleteProfileFromCurrentEndpoint(index)
+                            }
+
+                            Text {
+                              anchors.centerIn: parent
+                              text: "\uF1F8" // Trash
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: profDelHover.containsMouse ? "#EF4444" : root.dimText
+                            }
+                          }
+                        }
+                      }
+                    }
+
+                    Text {
+                      visible: !settingsFormCol.curEp || !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
+                      text: "No custom agent profiles configured. Click '+ Add Profile' to add one."
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: root.dimText
+                    }
+                  }
+                }
+              }
+            }
+
+            // Divider above bottom action bar
+            Rectangle {
+              Layout.fillWidth: true
+              height: 1
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+            }
+
+            // Bottom Action Bar
+            Rectangle {
+              Layout.fillWidth: true
+              height: 48
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.02)
+
+              RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 14
+                anchors.rightMargin: 14
+                spacing: 10
+
+                // Error banner
+                Rectangle {
+                  visible: !!root.settingsErrorMessage
+                  height: 28
+                  radius: 4
+                  color: Qt.rgba(239/255, 68/255, 68/255, 0.15)
+                  border.color: Qt.rgba(239/255, 68/255, 68/255, 0.4)
+                  Layout.fillWidth: true
+
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 6
+
+                    Text {
+                      text: "\uF00D" // Cross
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: "#EF4444"
+                    }
+
+                    Text {
+                      text: root.settingsErrorMessage
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: "#EF4444"
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+                  }
+                }
+
+                // Success banner
+                Rectangle {
+                  visible: !root.settingsErrorMessage && !!root.settingsSuccessMessage
+                  height: 28
+                  radius: 4
+                  color: Qt.rgba(16/255, 185/255, 129/255, 0.15)
+                  border.color: Qt.rgba(16/255, 185/255, 129/255, 0.4)
+                  Layout.fillWidth: true
+
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 6
+
+                    Text {
+                      text: "\uF00C" // Check
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: "#10B981"
+                    }
+
+                    Text {
+                      text: root.settingsSuccessMessage
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: "#10B981"
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+                  }
+                }
+
+                Item {
+                  visible: !root.settingsErrorMessage && !root.settingsSuccessMessage
+                  Layout.fillWidth: true
+                }
+
+                // Back / Cancel Button
+                Rectangle {
+                  height: 28
+                  radius: 6
+                  color: settingsCancelHover.containsMouse ? root.cardHover : "transparent"
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+                  implicitWidth: cancelTxt.implicitWidth + 18
+
+                  MouseArea {
+                    id: settingsCancelHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.isSettingsOpen = false
+                      root.loadSettings()
+                    }
+                  }
+
+                  Text {
+                    id: cancelTxt
+                    anchors.centerIn: parent
+                    text: "Back"
+                    font.family: root.fontFamily
+                    font.pixelSize: 11
+                    color: root.foreground
+                  }
+                }
+
+                // Save Button
+                Rectangle {
+                  height: 28
+                  radius: 6
+                  color: settingsSaveHover.containsMouse ? Qt.darker(root.accent, 1.1) : root.accent
+                  implicitWidth: saveRow.implicitWidth + 18
+
+                  MouseArea {
+                    id: settingsSaveHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.validateAndSaveSettings()
+                  }
+
+                  RowLayout {
+                    id: saveRow
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    Text {
+                      text: "\uF00C" // Check
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: "#FFFFFF"
+                    }
+
+                    Text {
+                      text: "Save Settings"
+                      font.family: root.fontFamily
+                      font.pixelSize: 11
+                      font.weight: Font.Medium
+                      color: "#FFFFFF"
+                    }
                   }
                 }
               }
