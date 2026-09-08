@@ -3305,7 +3305,7 @@ Panel {
                     }
 
                     Text {
-                      visible: !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
+                      visible: !settingsFormCol.curEp || !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
                       text: "No agent profiles configured. Click '+ Add Profile' above."
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -3410,12 +3410,12 @@ Panel {
                 Rectangle {
                   height: 28
                   radius: 6
-                  color: cancelHover.containsMouse ? root.cardHover : "transparent"
+                  color: settingsCancelHover.containsMouse ? root.cardHover : "transparent"
                   border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
                   implicitWidth: cancelTxt.implicitWidth + 18
 
                   MouseArea {
-                    id: cancelHover
+                    id: settingsCancelHover
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
@@ -3439,11 +3439,11 @@ Panel {
                 Rectangle {
                   height: 28
                   radius: 6
-                  color: saveHover.containsMouse ? Qt.darker(root.accent, 1.1) : root.accent
+                  color: settingsSaveHover.containsMouse ? Qt.darker(root.accent, 1.1) : root.accent
                   implicitWidth: saveRow.implicitWidth + 18
 
                   MouseArea {
-                    id: saveHover
+                    id: settingsSaveHover
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
