@@ -37,6 +37,258 @@ Panel {
   property string settingsSuccessMessage: ""
   property bool maskEndpointApiKey: true
 
+  // Target & Multiplex state
+  property var targetEndpoints: []
+  property var allAgentTargets: []
+  property var activeTarget: ({ endpointId: "all", profileName: "" })
+  property var currentSessionTarget: ({ endpointId: "", profileName: "" })
+  property bool isTargetDropdownOpen: false
+  property bool isAgentPickerOpen: false
+
+  function getMonogram(name) {
+    if (!name || typeof name !== "string") return "H"
+    var clean = name.trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
+    var words = clean.split(/\s+/).filter(Boolean)
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase()
+    }
+    var single = words[0] || ""
+    var uppers = single.match(/[A-Z]/g)
+    if (uppers && uppers.length >= 2) {
+      return (uppers[0] + uppers[1]).toUpperCase()
+    }
+    return (single[0] || "H").toUpperCase()
+  }
+
+  readonly property var agentColors: [
+    "#3B82F6",
+    "#10B981",
+    "#8B5CF6",
+    "#EC4899",
+    "#F59E0B",
+    "#06B6D4",
+    "#6366F1",
+    "#14B8A6",
+    "#F97316",
+    "#84CC16"
+  ]
+
+  function getAgentColor(name) {
+    if (!name || typeof name !== "string") return root.agentColors[0]
+    var hash = 0
+    for (var i = 0; i < name.length; i++) {
+      hash = ((hash * 31 + name.charCodeAt(i)) >>> 0)
+    }
+    return root.agentColors[hash % root.agentColors.length]
+  }
+
+  function getEndpointDisplayName(endpointId) {
+    if (!endpointId) return root.serverName || "Hermes"
+    for (var i = 0; i < root.targetEndpoints.length; i++) {
+      var ep = root.targetEndpoints[i]
+      if (ep.id === endpointId || ep.endpointId === endpointId) {
+        return ep.name || ep.endpointName || "Hermes"
+      }
+    }
+    return root.serverName || "Hermes"
+  }
+
+  function getSessionAgentName(s) {
+    if (!s) return root.serverName || "Hermes"
+    if (s.profile_name && s.profile_name !== "default") {
+      return s.profile_name
+    }
+    if (s.endpoint_name) {
+      return s.endpoint_name
+    }
+    if (s.id && s.id.indexOf(":") !== -1) {
+      var parts = s.id.split(":")
+      if (parts.length >= 3) {
+        var prof = parts[1]
+        if (prof && prof !== "default") return prof
+        return getEndpointDisplayName(parts[0])
+      }
+    }
+    return root.serverName || "Hermes"
+  }
+
+  function getSessionAgentDisplayName(s) {
+    if (!s) return root.serverName || "Hermes"
+    var epName = s.endpoint_name || getEndpointDisplayName(s.endpoint_id)
+    if (s.profile_name && s.profile_name !== "default") {
+      return epName ? (epName + " (" + s.profile_name + ")") : s.profile_name
+    }
+    return epName || (root.serverName || "Hermes")
+  }
+
+  function getSessionMonogram(s) {
+    if (s && s.monogram) return s.monogram
+    var agentName = getSessionAgentName(s)
+    return getMonogram(agentName)
+  }
+
+  function getSessionColor(s) {
+    if (s && s.color) return s.color
+    var agentName = getSessionAgentName(s)
+    return getAgentColor(agentName)
+  }
+
+  function getSessionTarget(sessionId) {
+    if (!sessionId) {
+      return {
+        endpointId: (root.currentSessionTarget && root.currentSessionTarget.endpointId) || "",
+        endpointName: getEndpointDisplayName((root.currentSessionTarget && root.currentSessionTarget.endpointId) || ""),
+        profileName: (root.currentSessionTarget && root.currentSessionTarget.profileName) || "default"
+      }
+    }
+    for (var i = 0; i < root.sessions.length; i++) {
+      var s = root.sessions[i]
+      if (s.id === sessionId) {
+        return {
+          endpointId: s.endpoint_id || "",
+          endpointName: s.endpoint_name || getEndpointDisplayName(s.endpoint_id),
+          profileName: s.profile_name || "default"
+        }
+      }
+    }
+    if (sessionId.indexOf(":") !== -1) {
+      var parts = sessionId.split(":")
+      if (parts.length >= 3) {
+        return {
+          endpointId: parts[0],
+          endpointName: getEndpointDisplayName(parts[0]),
+          profileName: parts[1] || "default"
+        }
+      }
+    }
+    return {
+      endpointId: (root.currentSessionTarget && root.currentSessionTarget.endpointId) || "",
+      endpointName: getEndpointDisplayName((root.currentSessionTarget && root.currentSessionTarget.endpointId) || ""),
+      profileName: (root.currentSessionTarget && root.currentSessionTarget.profileName) || "default"
+    }
+  }
+
+  function currentSessionItem() {
+    if (root.selectedSessionId) {
+      for (var i = 0; i < root.sessions.length; i++) {
+        if (root.sessions[i].id === root.selectedSessionId) {
+          return root.sessions[i]
+        }
+      }
+    }
+    var target = root.getSessionTarget(root.selectedSessionId)
+    return {
+      endpoint_id: target.endpointId,
+      endpoint_name: target.endpointName,
+      profile_name: target.profileName,
+      source: "omarchy-bar"
+    }
+  }
+
+  function activeTargetDisplayName() {
+    if (!root.activeTarget || root.activeTarget.endpointId === "all" || !root.activeTarget.endpointId) {
+      return "Hermes"
+    }
+    for (var i = 0; i < root.allAgentTargets.length; i++) {
+      var t = root.allAgentTargets[i]
+      if (t.endpointId === root.activeTarget.endpointId && (t.profileName || "default") === (root.activeTarget.profileName || "default")) {
+        return t.displayName || t.endpointName
+      }
+    }
+    return "Hermes"
+  }
+
+  function activeTargetStatusColor() {
+    if (!root.activeTarget || root.activeTarget.endpointId === "all" || !root.activeTarget.endpointId) {
+      return root.isConnected ? "#10B981" : "#EF4444"
+    }
+    for (var i = 0; i < root.allAgentTargets.length; i++) {
+      var t = root.allAgentTargets[i]
+      if (t.endpointId === root.activeTarget.endpointId) {
+        return t.connected ? "#10B981" : "#EF4444"
+      }
+    }
+    return root.isConnected ? "#10B981" : "#EF4444"
+  }
+
+  function isTargetDefaultChoice(t) {
+    if (!t) return false
+    if (root.activeTarget && root.activeTarget.endpointId && root.activeTarget.endpointId !== "all") {
+      return t.endpointId === root.activeTarget.endpointId &&
+        (t.profileName || "default") === (root.activeTarget.profileName || "default")
+    }
+    if (root.allAgentTargets.length > 0) {
+      for (var i = 0; i < root.allAgentTargets.length; i++) {
+        if (root.allAgentTargets[i].connected) {
+          return t.targetId === root.allAgentTargets[i].targetId
+        }
+      }
+      return t.targetId === root.allAgentTargets[0].targetId
+    }
+    return false
+  }
+
+  function getSortedAgentTargets() {
+    var targets = (root.allAgentTargets || []).slice()
+    targets.sort(function(a, b) {
+      var aDef = root.isTargetDefaultChoice(a) ? 1 : 0
+      var bDef = root.isTargetDefaultChoice(b) ? 1 : 0
+      if (aDef !== bDef) return bDef - aDef
+      if (a.connected !== b.connected) return (b.connected ? 1 : 0) - (a.connected ? 1 : 0)
+      return (a.displayName || "").localeCompare(b.displayName || "")
+    })
+    return targets
+  }
+
+  function setActiveTarget(endpointId, profileName) {
+    root.activeTarget = {
+      endpointId: endpointId || "all",
+      profileName: profileName || ""
+    }
+    updateFilteredSessions()
+    refreshSessions()
+    if (endpointId && endpointId !== "all") {
+      setActiveTargetProc.command = [
+        "node", root.scriptPath, "set-active-target",
+        "--endpoint", endpointId,
+        "--profile", profileName || "default"
+      ]
+      setActiveTargetProc.running = true
+    } else {
+      setActiveTargetProc.command = [
+        "node", root.scriptPath, "set-active-target",
+        "--endpoint", "all",
+        "--profile", ""
+      ]
+      setActiveTargetProc.running = true
+    }
+  }
+
+  function startNewSessionForTarget(endpointId, profileName) {
+    root.hasSelectedInitialSession = true
+    isEditingTitle = false
+    isConfirmingDeleteSession = false
+    showSystemPromptInput = false
+    sessionSystemPrompt = ""
+    selectedSessionId = ""
+    activeSessionTitle = "New Session"
+    messages = []
+    currentStreamingContent = ""
+    currentToolEvents = []
+    promptDraft = ""
+    promptHistoryIndex = -1
+    root.currentSessionTarget = {
+      endpointId: endpointId || "",
+      profileName: profileName || "default"
+    }
+    Qt.callLater(function() {
+      if (promptInput) {
+        promptInput.text = ""
+        promptInput.forceActiveFocus()
+      }
+    })
+  }
+
   // Session state
   property var sessions: []
   property var filteredSessions: []
@@ -148,7 +400,11 @@ Panel {
     onTriggered: {
       root.refreshSessions()
       if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
-        getSessionProc.command = ["node", root.scriptPath, "get-session", root.selectedSessionId]
+        var getArgs = ["node", root.scriptPath, "get-session", root.selectedSessionId]
+        var selTarget = root.getSessionTarget(root.selectedSessionId)
+        if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
+        if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
+        getSessionProc.command = getArgs
         getSessionProc.running = true
       }
     }
@@ -158,6 +414,7 @@ Panel {
     root.isRefreshing = true
     refreshAnimationTimer.restart()
     root.checkStatus()
+    root.refreshTargets()
     root.refreshSessions()
     if (root.selectedSessionId) {
       root.selectSession(root.selectedSessionId)
@@ -168,6 +425,8 @@ Panel {
     if (opened) {
       root.isConfirmingDeleteSession = false
       root.isConfirmingDeleteEndpoint = false
+      root.isTargetDropdownOpen = false
+      root.isAgentPickerOpen = false
       root.settingsErrorMessage = ""
       root.settingsSuccessMessage = ""
       triggerRefresh()
@@ -182,6 +441,56 @@ Panel {
     if (statusProc.running) return
     statusProc.command = ["node", root.scriptPath, "status"]
     statusProc.running = true
+  }
+
+  function refreshTargets() {
+    if (listTargetsProc.running) return
+    listTargetsProc.command = ["node", root.scriptPath, "list-targets"]
+    listTargetsProc.running = true
+  }
+
+  function parseTargets(text) {
+    if (!text || String(text).trim() === "") return
+    try {
+      var res = JSON.parse(String(text).trim())
+      if (res && res.success && Array.isArray(res.targets)) {
+        root.targetEndpoints = res.targets
+        var flat = []
+        for (var i = 0; i < res.targets.length; i++) {
+          var ep = res.targets[i]
+          if (Array.isArray(ep.profiles)) {
+            for (var p = 0; p < ep.profiles.length; p++) {
+              var prof = ep.profiles[p]
+              flat.push({
+                targetId: prof.targetId || (ep.id + ":" + prof.name),
+                endpointId: ep.id,
+                endpointName: ep.name,
+                profileName: prof.name,
+                isDefault: prof.isDefault === true,
+                displayName: prof.displayName || (ep.name + " (" + prof.name + ")"),
+                monogram: prof.monogram || root.getMonogram(prof.isDefault ? ep.name : prof.name),
+                color: prof.color || root.getAgentColor(prof.isDefault ? ep.name : prof.name),
+                connected: ep.connected === true,
+                url: ep.url,
+                port: ep.port
+              })
+            }
+          }
+        }
+        root.allAgentTargets = flat
+
+        var anyConn = false
+        for (var e = 0; e < res.targets.length; e++) {
+          if (res.targets[e].connected) {
+            anyConn = true
+            break
+          }
+        }
+        root.isConnected = anyConn
+      }
+    } catch (e) {
+      console.warn("hermes-bridge/list-targets parse error:", e)
+    }
   }
 
   function parseStatus(text) {
@@ -204,7 +513,14 @@ Panel {
 
   function refreshSessions() {
     if (listSessionsProc.running) return
-    listSessionsProc.command = ["node", root.scriptPath, "list-sessions"]
+    var args = ["node", root.scriptPath, "list-sessions"]
+    if (root.activeTarget && root.activeTarget.endpointId && root.activeTarget.endpointId !== "all") {
+      args.push("--endpoint", root.activeTarget.endpointId)
+      if (root.activeTarget.profileName) {
+        args.push("--profile", root.activeTarget.profileName)
+      }
+    }
+    listSessionsProc.command = args
     listSessionsProc.running = true
   }
 
@@ -283,7 +599,18 @@ Panel {
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].id === sessionId) {
         activeSessionTitle = sessions[i].title || "Session"
+        root.currentSessionTarget = {
+          endpointId: sessions[i].endpoint_id || "",
+          profileName: sessions[i].profile_name || "default"
+        }
         break
+      }
+    }
+    if (!root.currentSessionTarget || !root.currentSessionTarget.endpointId) {
+      var sTarget = root.getSessionTarget(sessionId)
+      root.currentSessionTarget = {
+        endpointId: sTarget.endpointId,
+        profileName: sTarget.profileName
       }
     }
 
@@ -308,7 +635,11 @@ Panel {
     if (getSessionProc.running) {
       getSessionProc.running = false
     }
-    getSessionProc.command = ["node", root.scriptPath, "get-session", sessionId]
+    var getArgs = ["node", root.scriptPath, "get-session", sessionId]
+    var selTarget = root.getSessionTarget(sessionId)
+    if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
+    if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
+    getSessionProc.command = getArgs
     getSessionProc.running = true
 
     Qt.callLater(function() {
@@ -382,29 +713,25 @@ Panel {
       root.sessionCache = uc
     }
 
-    renameSessionProc.command = ["node", root.scriptPath, "rename-session", selectedSessionId, trimmed]
+    var renArgs = ["node", root.scriptPath, "rename-session", selectedSessionId, trimmed]
+    var renTarget = root.getSessionTarget(selectedSessionId)
+    if (renTarget.endpointId) renArgs.push("--endpoint", renTarget.endpointId)
+    if (renTarget.profileName) renArgs.push("--profile", renTarget.profileName)
+    renameSessionProc.command = renArgs
     renameSessionProc.running = true
   }
 
   function startNewSession() {
-    root.hasSelectedInitialSession = true
-    isEditingTitle = false
-    isConfirmingDeleteSession = false
-    showSystemPromptInput = false
-    sessionSystemPrompt = ""
-    selectedSessionId = ""
-    activeSessionTitle = "New Session"
-    messages = []
-    currentStreamingContent = ""
-    currentToolEvents = []
-    promptDraft = ""
-    promptHistoryIndex = -1
-    Qt.callLater(function() {
-      if (promptInput) {
-        promptInput.text = ""
-        promptInput.forceActiveFocus()
-      }
-    })
+    var defEp = ""
+    var defProf = "default"
+    if (root.activeTarget && root.activeTarget.endpointId && root.activeTarget.endpointId !== "all") {
+      defEp = root.activeTarget.endpointId
+      defProf = root.activeTarget.profileName || "default"
+    } else if (root.allAgentTargets.length > 0) {
+      defEp = root.allAgentTargets[0].endpointId
+      defProf = root.allAgentTargets[0].profileName || "default"
+    }
+    root.startNewSessionForTarget(defEp, defProf)
   }
 
   function navigatePromptHistory(goBack) {
@@ -457,7 +784,11 @@ Panel {
         root.startNewSession()
       }
     }
-    deleteSessionProc.command = ["node", root.scriptPath, "delete-session", sessionId]
+    var delArgs = ["node", root.scriptPath, "delete-session", sessionId]
+    var delTarget = root.getSessionTarget(sessionId)
+    if (delTarget.endpointId) delArgs.push("--endpoint", delTarget.endpointId)
+    if (delTarget.profileName) delArgs.push("--profile", delTarget.profileName)
+    deleteSessionProc.command = delArgs
     deleteSessionProc.running = true
   }
 
@@ -470,12 +801,16 @@ Panel {
         break
       }
     }
+    var targetInfo = root.getSessionTarget(sessionId)
     var item
     if (foundIdx >= 0) {
       item = Object.assign({}, list[foundIdx], {
         updated_at: new Date().toISOString()
       })
       if (title && !title.startsWith("Session api-")) item.title = title
+      if (!item.endpoint_id && targetInfo.endpointId) item.endpoint_id = targetInfo.endpointId
+      if (!item.endpoint_name && targetInfo.endpointName) item.endpoint_name = targetInfo.endpointName
+      if (!item.profile_name && targetInfo.profileName) item.profile_name = targetInfo.profileName
       list.splice(foundIdx, 1)
       list.unshift(item)
     } else {
@@ -490,7 +825,11 @@ Panel {
         updated_at: new Date().toISOString(),
         source: "omarchy-bar",
         message_count: 1,
-        model: root.currentModel
+        model: root.currentModel,
+        endpoint_id: targetInfo.endpointId,
+        endpoint_name: targetInfo.endpointName,
+        profile_name: targetInfo.profileName,
+        target_id: targetInfo.endpointId + ":" + targetInfo.profileName
       }
       list.unshift(item)
     }
@@ -527,9 +866,23 @@ Panel {
     var isNewSession = !targetSessionId
 
     if (isNewSession) {
+      var epId = (root.currentSessionTarget && root.currentSessionTarget.endpointId) || ""
+      var profName = (root.currentSessionTarget && root.currentSessionTarget.profileName) || "default"
+      if (!epId && root.activeTarget && root.activeTarget.endpointId !== "all") {
+        epId = root.activeTarget.endpointId
+        profName = root.activeTarget.profileName || "default"
+      }
+      if (!epId && root.allAgentTargets.length > 0) {
+        epId = root.allAgentTargets[0].endpointId
+        profName = root.allAgentTargets[0].profileName || "default"
+      }
       var timestamp = Date.now().toString(36)
       var rand = Math.random().toString(36).substring(2, 6)
-      targetSessionId = "api-" + timestamp + "-" + rand
+      if (epId) {
+        targetSessionId = epId + ":" + profName + ":api-" + timestamp + "-" + rand
+      } else {
+        targetSessionId = "api-" + timestamp + "-" + rand
+      }
       root.selectedSessionId = targetSessionId
       root.activeSessionTitle = text.length > 32 ? (text.slice(0, 32) + "...") : text
     }
@@ -569,6 +922,14 @@ Panel {
       "--model", root.currentModel,
       "--session", targetSessionId
     ]
+
+    var sessionTarget = root.getSessionTarget(targetSessionId)
+    if (sessionTarget.endpointId) {
+      args.push("--endpoint", sessionTarget.endpointId)
+    }
+    if (sessionTarget.profileName) {
+      args.push("--profile", sessionTarget.profileName)
+    }
 
     if (sessionSystemPrompt && sessionSystemPrompt.trim() !== "") {
       args.push("--system", sessionSystemPrompt.trim())
@@ -746,10 +1107,17 @@ Panel {
   function updateFilteredSessions() {
     var q = (searchQuery || "").toLowerCase()
     var out = []
+    var filterEp = root.activeTarget ? root.activeTarget.endpointId : "all"
+    var filterProf = root.activeTarget ? root.activeTarget.profileName : ""
+
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i]
       if (omarchyOnly && s.source !== "omarchy-bar" && s.source !== "api-server") {
         continue
+      }
+      if (filterEp && filterEp !== "all") {
+        if (s.endpoint_id && s.endpoint_id !== filterEp) continue
+        if (filterProf && s.profile_name && s.profile_name !== filterProf) continue
       }
       if (q) {
         var t = (s.title || "").toLowerCase()
@@ -765,6 +1133,7 @@ Panel {
   onSessionsChanged: updateFilteredSessions()
   onSearchQueryChanged: updateFilteredSessions()
   onOmarchyOnlyChanged: updateFilteredSessions()
+  onActiveTargetChanged: updateFilteredSessions()
 
   function formatTime(isoStr) {
     if (!isoStr) return ""
@@ -853,6 +1222,11 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function newSession(): string {
+      root.open()
+      root.startNewSession()
+      return "ok"
+    }
     function openSettings(): string {
       root.open()
       root.isSettingsOpen = true
@@ -878,6 +1252,16 @@ Panel {
     function saveSettings(): string {
       root.validateAndSaveSettings()
       return root.settingsErrorMessage || "ok"
+    }
+    function toggleTargetDropdown(): string {
+      root.open()
+      root.isTargetDropdownOpen = !root.isTargetDropdownOpen
+      return "ok"
+    }
+    function toggleAgentPicker(): string {
+      root.open()
+      root.isAgentPickerOpen = !root.isAgentPickerOpen
+      return "ok"
     }
     function openSession(sessionId: string): string {
       root.open()
@@ -1195,6 +1579,30 @@ Panel {
     }
   }
 
+  Process {
+    id: listTargetsProc
+    running: false
+    command: []
+    stdout: StdioCollector {
+      id: listTargetsStdout
+      waitForEnd: true
+      onStreamFinished: root.parseTargets(listTargetsStdout.text)
+    }
+    stderr: StdioCollector {
+      id: listTargetsStderr
+      waitForEnd: true
+      onStreamFinished: {
+        if (listTargetsStderr.text && listTargetsStderr.text.trim()) console.warn("hermes-bridge/list-targets stderr:", listTargetsStderr.text)
+      }
+    }
+  }
+
+  Process {
+    id: setActiveTargetProc
+    running: false
+    command: []
+  }
+
   Component {
     id: streamProcessComponent
     Process {
@@ -1231,6 +1639,7 @@ Panel {
 
   Component.onCompleted: {
     triggerRefresh()
+    root.refreshTargets()
   }
 
   Timer {
@@ -1239,6 +1648,7 @@ Panel {
     repeat: true
     onTriggered: {
       root.checkStatus()
+      root.refreshTargets()
       if (root.opened) {
         root.refreshSessions()
       }
@@ -1324,7 +1734,11 @@ Panel {
         }
       }
       onCloseRequested: {
-        if (root.isSettingsOpen) {
+        if (root.isTargetDropdownOpen) {
+          root.isTargetDropdownOpen = false
+        } else if (root.isAgentPickerOpen) {
+          root.isAgentPickerOpen = false
+        } else if (root.isSettingsOpen) {
           root.isSettingsOpen = false
           root.loadSettings()
         } else if (root.isConfirmingDeleteSession) {
@@ -1359,27 +1773,74 @@ Panel {
               color: root.accent
             }
 
+            // Settings Title (when settings is open)
             Text {
-              text: root.isSettingsOpen ? (root.serverName + " • Settings") : root.serverName
+              visible: root.isSettingsOpen
+              text: root.serverName + " • Settings"
               font.family: root.fontFamily
               font.pixelSize: 14
               font.weight: Font.Bold
               color: root.foreground
             }
 
-            // Health indicator dot
+            // Target Dropdown Selector Button (when settings is closed)
             Rectangle {
-              width: 8
-              height: 8
-              radius: 4
-              color: root.isConnected ? "#10B981" : "#EF4444"
-              Layout.alignment: Qt.AlignVCenter
+              id: targetSelectorBtn
+              visible: !root.isSettingsOpen
+              height: 28
+              radius: 6
+              color: targetDropdownHover.containsMouse ? root.cardHover : "transparent"
+              border.color: root.isTargetDropdownOpen ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.4) : "transparent"
+              implicitWidth: targetHeaderRow.implicitWidth + 14
+
+              MouseArea {
+                id: targetDropdownHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  root.isAgentPickerOpen = false
+                  root.isTargetDropdownOpen = !root.isTargetDropdownOpen
+                }
+              }
+
+              RowLayout {
+                id: targetHeaderRow
+                anchors.centerIn: parent
+                spacing: 6
+
+                // Status indicator dot
+                Rectangle {
+                  width: 8
+                  height: 8
+                  radius: 4
+                  color: root.activeTargetStatusColor()
+                  Layout.alignment: Qt.AlignVCenter
+                }
+
+                Text {
+                  text: root.activeTargetDisplayName()
+                  font.family: root.fontFamily
+                  font.pixelSize: 13
+                  font.weight: Font.Bold
+                  color: root.foreground
+                }
+
+                Text {
+                  text: "\uF078" // Chevron down
+                  font.family: root.fontFamily
+                  font.pixelSize: 9
+                  color: root.dimText
+                  Layout.alignment: Qt.AlignVCenter
+                }
+              }
             }
 
             Item { Layout.fillWidth: true }
 
             // New Session Button
             Rectangle {
+              id: newSessionBtn
               height: 28
               radius: 6
               color: newHover.containsMouse ? root.cardHover : root.cardBg
@@ -1393,13 +1854,21 @@ Panel {
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
                   if (root.isSettingsOpen) root.isSettingsOpen = false
-                  root.startNewSession()
+                  root.isTargetDropdownOpen = false
+                  if (root.allAgentTargets.length <= 1) {
+                    var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
+                    var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
+                    root.startNewSessionForTarget(defEp, defProf)
+                  } else {
+                    root.isAgentPickerOpen = !root.isAgentPickerOpen
+                  }
                 }
               }
 
               RowLayout {
                 id: newRow
                 anchors.centerIn: parent
+                anchors.verticalCenterOffset: 1
                 spacing: 6
 
                 Text {
@@ -1575,7 +2044,7 @@ Panel {
                 delegate: Rectangle {
                   id: sessionDelegate
                   width: sessionListView.width
-                  height: 50
+                  height: 52
                   radius: 6
                   color: root.selectedSessionId === modelData.id
                     ? root.cardHover
@@ -1592,11 +2061,34 @@ Panel {
 
                   RowLayout {
                     anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 6
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.topMargin: 6
+                    anchors.bottomMargin: 6
+                    spacing: 8
+
+                    // Monogram Circle
+                    Rectangle {
+                      width: 28
+                      height: 28
+                      radius: 14
+                      color: root.getSessionColor(modelData)
+                      Layout.alignment: Qt.AlignVCenter
+
+                      Text {
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 1
+                        text: root.getSessionMonogram(modelData)
+                        color: "#FFFFFF"
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        font.weight: Font.Bold
+                      }
+                    }
 
                     ColumnLayout {
                       Layout.fillWidth: true
+                      Layout.alignment: Qt.AlignVCenter
                       spacing: 2
 
                       Text {
@@ -1609,26 +2101,20 @@ Panel {
                         Layout.fillWidth: true
                       }
 
-                      RowLayout {
-                        spacing: 4
-                        Text {
-                          text: modelData.source || "hermes"
-                          font.family: root.fontFamily
-                          font.pixelSize: 9
-                          color: root.accent
-                        }
-                        Text {
-                          text: "• " + (modelData.message_count || 0) + " msgs"
-                          font.family: root.fontFamily
-                          font.pixelSize: 9
-                          color: root.dimText
-                        }
+                      Text {
+                        text: root.getSessionAgentName(modelData)
+                        font.family: root.fontFamily
+                        font.pixelSize: 9
+                        font.weight: Font.Medium
+                        color: root.accent
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
                       }
                     }
 
                     // Trailing status slot for in-progress streaming dot
                     Item {
-                      width: 20
+                      width: 14
                       Layout.fillHeight: true
 
                       Rectangle {
@@ -1697,6 +2183,25 @@ Panel {
                     anchors.fill: parent
                     spacing: 6
 
+                    // Active Chat Monogram Badge
+                    Rectangle {
+                      width: 20
+                      height: 20
+                      radius: 10
+                      color: root.getSessionColor(root.currentSessionItem())
+                      Layout.alignment: Qt.AlignVCenter
+
+                      Text {
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 1
+                        text: root.getSessionMonogram(root.currentSessionItem())
+                        color: "#FFFFFF"
+                        font.family: root.fontFamily
+                        font.pixelSize: 9
+                        font.weight: Font.Bold
+                      }
+                    }
+
                     Text {
                       text: root.selectedSessionId ? root.activeSessionTitle : "New Session"
                       font.family: root.fontFamily
@@ -1705,6 +2210,25 @@ Panel {
                       color: root.foreground
                       elide: Text.ElideRight
                       Layout.fillWidth: true
+                    }
+
+                    // Target Agent display pill
+                    Rectangle {
+                      height: 18
+                      radius: 9
+                      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+                      implicitWidth: targetBadgeText.implicitWidth + 12
+                      Layout.alignment: Qt.AlignVCenter
+
+                      Text {
+                        id: targetBadgeText
+                        anchors.centerIn: parent
+                        text: root.getSessionAgentDisplayName(root.currentSessionItem())
+                        font.family: root.fontFamily
+                        font.pixelSize: 9
+                        font.weight: Font.Medium
+                        color: root.dimText
+                      }
                     }
 
                     // Edit title icon button
@@ -1926,13 +2450,6 @@ Panel {
                       }
                     }
                   }
-                }
-
-                Text {
-                  text: root.currentModel
-                  font.family: root.fontFamily
-                  font.pixelSize: 9
-                  color: root.dimText
                 }
               }
             }
@@ -3586,6 +4103,495 @@ Panel {
                       font.pixelSize: 11
                       font.weight: Font.Medium
                       color: "#FFFFFF"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // ------------------------- Target Dropdown Overlay
+      Item {
+        id: targetDropdownOverlay
+        anchors.fill: parent
+        z: 100
+        visible: root.isTargetDropdownOpen
+
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.isTargetDropdownOpen = false
+        }
+
+        Rectangle {
+          id: targetDropdownCard
+          x: 10
+          y: 46
+          width: 320
+          implicitHeight: Math.min(420, targetDropdownContent.implicitHeight + 16)
+          color: root.background
+          radius: 8
+          border.color: root.border
+          border.width: 1
+
+          Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            z: -1
+            radius: 9
+            color: "transparent"
+            border.color: Qt.rgba(0, 0, 0, 0.3)
+            border.width: 1
+          }
+
+          Flickable {
+            id: targetDropdownFlick
+            anchors.fill: parent
+            anchors.margins: 8
+            contentHeight: targetDropdownContent.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            ColumnLayout {
+              id: targetDropdownContent
+              width: targetDropdownFlick.width
+              spacing: 4
+
+              // Item 1: All Agents (Hermes)
+              Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                implicitHeight: 40
+                height: 40
+                radius: 6
+                color: root.activeTarget.endpointId === "all"
+                  ? root.cardHover
+                  : (allHover.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
+                border.color: root.activeTarget.endpointId === "all" ? root.accent : "transparent"
+
+                MouseArea {
+                  id: allHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.setActiveTarget("all", "")
+                    root.isTargetDropdownOpen = false
+                  }
+                }
+
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.leftMargin: 8
+                  anchors.rightMargin: 8
+                  spacing: 8
+
+                  Rectangle {
+                    Layout.preferredWidth: 26
+                    Layout.preferredHeight: 26
+                    width: 26
+                    height: 26
+                    radius: 13
+                    color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                    Layout.alignment: Qt.AlignVCenter
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: "\u{f06d3}" // Feather
+                      font.family: root.fontFamily
+                      font.pixelSize: 12
+                      color: root.accent
+                    }
+                  }
+
+                  ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Infinity
+                    spacing: 1
+
+                    Text {
+                      text: "Hermes (All Agents)"
+                      font.family: root.fontFamily
+                      font.pixelSize: 11
+                      font.weight: Font.SemiBold
+                      color: root.foreground
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+
+                    Text {
+                      text: "Unified view • All endpoints & profiles"
+                      font.family: root.fontFamily
+                      font.pixelSize: 9
+                      color: root.dimText
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+                  }
+
+                  Text {
+                    visible: root.activeTarget.endpointId === "all"
+                    text: "\uF00C" // Checkmark
+                    font.family: root.fontFamily
+                    font.pixelSize: 10
+                    color: root.accent
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+                }
+              }
+
+              // Divider
+              Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                Layout.topMargin: 4
+                Layout.bottomMargin: 4
+              }
+
+              // Endpoint Groups Repeater
+              Repeater {
+                model: root.targetEndpoints
+
+                ColumnLayout {
+                  id: epGroupCol
+                  Layout.fillWidth: true
+                  spacing: 3
+                  required property var modelData
+
+                  // Endpoint Header
+                  RowLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 4
+                    Layout.rightMargin: 4
+                    Layout.topMargin: 2
+                    spacing: 6
+
+                    Rectangle {
+                      Layout.preferredWidth: 6
+                      Layout.preferredHeight: 6
+                      width: 6
+                      height: 6
+                      radius: 3
+                      color: epGroupCol.modelData.connected ? "#10B981" : "#EF4444"
+                      Layout.alignment: Qt.AlignVCenter
+                    }
+
+                    Text {
+                      text: epGroupCol.modelData.name || "Endpoint"
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      font.weight: Font.Bold
+                      color: root.dimText
+                    }
+
+                    Item { Layout.fillWidth: true }
+                  }
+
+                  // Profiles inside this endpoint
+                  Repeater {
+                    model: epGroupCol.modelData.profiles || []
+
+                    Rectangle {
+                      id: profCard
+                      required property var modelData
+                      Layout.fillWidth: true
+                      Layout.preferredHeight: 38
+                      implicitHeight: 38
+                      height: 38
+                      radius: 6
+                      readonly property bool isActive: (root.activeTarget.endpointId === epGroupCol.modelData.id || root.activeTarget.endpointId === epGroupCol.modelData.endpointId) &&
+                        (root.activeTarget.profileName || "default") === (profCard.modelData.name || "default")
+
+                      color: profCard.isActive
+                        ? root.cardHover
+                        : (profHover.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
+                      border.color: profCard.isActive ? root.accent : "transparent"
+
+                      MouseArea {
+                        id: profHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.setActiveTarget(epGroupCol.modelData.id, profCard.modelData.name)
+                          root.isTargetDropdownOpen = false
+                        }
+                      }
+
+                      RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 8
+                        spacing: 8
+
+                        Rectangle {
+                          Layout.preferredWidth: 24
+                          Layout.preferredHeight: 24
+                          width: 24
+                          height: 24
+                          radius: 12
+                          color: profCard.modelData.color || root.getAgentColor(profCard.modelData.isDefault ? epGroupCol.modelData.name : profCard.modelData.name)
+                          Layout.alignment: Qt.AlignVCenter
+
+                          Text {
+                            anchors.centerIn: parent
+                            anchors.verticalCenterOffset: 1
+                            text: profCard.modelData.monogram || root.getMonogram(profCard.modelData.isDefault ? epGroupCol.modelData.name : profCard.modelData.name)
+                            color: "#FFFFFF"
+                            font.family: root.fontFamily
+                            font.pixelSize: 10
+                            font.weight: Font.Bold
+                          }
+                        }
+
+                        ColumnLayout {
+                          Layout.fillWidth: true
+                          Layout.maximumWidth: Infinity
+                          spacing: 1
+
+                          Text {
+                            text: profCard.modelData.isDefault ? "Default" : profCard.modelData.name
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            font.weight: profCard.isActive ? Font.Bold : Font.Medium
+                            color: root.foreground
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                          }
+
+                          Text {
+                            text: profCard.modelData.isDefault ? "Default agent profile" : "Multiplexed profile"
+                            font.family: root.fontFamily
+                            font.pixelSize: 9
+                            color: root.dimText
+                            elide: Text.ElideRight
+                            Layout.fillWidth: true
+                          }
+                        }
+
+                        Text {
+                          visible: profCard.isActive
+                          text: "\uF00C" // Checkmark
+                          font.family: root.fontFamily
+                          font.pixelSize: 10
+                          color: root.accent
+                          Layout.alignment: Qt.AlignVCenter
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // ------------------------- Agent Picker Popover Overlay
+      Item {
+        id: agentPickerOverlay
+        anchors.fill: parent
+        z: 100
+        visible: root.isAgentPickerOpen
+
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.isAgentPickerOpen = false
+        }
+
+        Rectangle {
+          id: agentPickerCard
+          x: Math.max(10, Math.min(parent.width - width - 10, newSessionBtn.x - 100))
+          y: 46
+          width: 310
+          implicitHeight: Math.min(420, agentPickerContent.implicitHeight + 16)
+          height: implicitHeight
+          color: root.background
+          radius: 8
+          border.color: root.border
+          border.width: 1
+
+          Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            z: -1
+            radius: 9
+            color: "transparent"
+            border.color: Qt.rgba(0, 0, 0, 0.3)
+            border.width: 1
+          }
+
+          Flickable {
+            id: agentPickerFlick
+            anchors.fill: parent
+            anchors.margins: 8
+            contentHeight: agentPickerContent.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            ColumnLayout {
+              id: agentPickerContent
+              width: agentPickerFlick.width
+              spacing: 4
+
+              // Header
+              RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 4
+                Layout.rightMargin: 4
+                Layout.topMargin: 2
+                spacing: 6
+
+                Text {
+                  text: "Start New Session With"
+                  font.family: root.fontFamily
+                  font.pixelSize: 11
+                  font.weight: Font.Bold
+                  color: root.foreground
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                  text: root.allAgentTargets.length + (root.allAgentTargets.length === 1 ? " profile" : " profiles")
+                  font.family: root.fontFamily
+                  font.pixelSize: 9
+                  color: root.dimText
+                }
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                Layout.topMargin: 2
+                Layout.bottomMargin: 4
+              }
+
+              Repeater {
+                model: root.getSortedAgentTargets()
+
+                Rectangle {
+                  id: agentTargetCard
+                  required property var modelData
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 44
+                  implicitHeight: 44
+                  height: 44
+                  radius: 6
+
+                  readonly property bool isDefaultChoice: root.isTargetDefaultChoice(agentTargetCard.modelData)
+
+                  color: agentTargetCard.isDefaultChoice
+                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
+                    : (agentTargetHover.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
+                  border.color: agentTargetCard.isDefaultChoice ? root.accent : "transparent"
+
+                  MouseArea {
+                    id: agentTargetHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.isAgentPickerOpen = false
+                      root.startNewSessionForTarget(agentTargetCard.modelData.endpointId, agentTargetCard.modelData.profileName)
+                    }
+                  }
+
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Rectangle {
+                      Layout.preferredWidth: 28
+                      Layout.preferredHeight: 28
+                      width: 28
+                      height: 28
+                      radius: 14
+                      color: agentTargetCard.modelData.color || root.getAgentColor(agentTargetCard.modelData.displayName)
+                      Layout.alignment: Qt.AlignVCenter
+
+                      Text {
+                        anchors.centerIn: parent
+                        anchors.verticalCenterOffset: 1
+                        text: agentTargetCard.modelData.monogram || root.getMonogram(agentTargetCard.modelData.displayName)
+                        color: "#FFFFFF"
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        font.weight: Font.Bold
+                      }
+                    }
+
+                    ColumnLayout {
+                      Layout.fillWidth: true
+                      Layout.maximumWidth: Infinity
+                      spacing: 1
+
+                      RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text {
+                          text: agentTargetCard.modelData.displayName
+                          font.family: root.fontFamily
+                          font.pixelSize: 11
+                          font.weight: Font.SemiBold
+                          color: root.foreground
+                          elide: Text.ElideRight
+                          Layout.fillWidth: true
+                        }
+
+                        Rectangle {
+                          visible: agentTargetCard.isDefaultChoice
+                          height: 14
+                          radius: 7
+                          color: root.accent
+                          implicitWidth: defaultTag.implicitWidth + 8
+
+                          Text {
+                            id: defaultTag
+                            anchors.centerIn: parent
+                            text: "Default"
+                            font.family: root.fontFamily
+                            font.pixelSize: 8
+                            font.weight: Font.Bold
+                            color: "#FFFFFF"
+                          }
+                        }
+                      }
+
+                      RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+                        Rectangle {
+                          Layout.preferredWidth: 5
+                          Layout.preferredHeight: 5
+                          width: 5
+                          height: 5
+                          radius: 2.5
+                          color: agentTargetCard.modelData.connected ? "#10B981" : "#EF4444"
+                          Layout.alignment: Qt.AlignVCenter
+                        }
+                        Text {
+                          text: agentTargetCard.modelData.endpointName + " • " + (agentTargetCard.modelData.isDefault ? "default profile" : agentTargetCard.modelData.profileName)
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          color: root.dimText
+                          elide: Text.ElideRight
+                          Layout.fillWidth: true
+                        }
+                      }
+                    }
+
+                    Text {
+                      text: "\uF061" // Right arrow
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: agentTargetHover.containsMouse ? root.accent : root.dimText
+                      Layout.alignment: Qt.AlignVCenter
                     }
                   }
                 }

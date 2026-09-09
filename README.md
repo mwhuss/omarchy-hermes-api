@@ -21,20 +21,15 @@ omarchy plugin add https://github.com/mwhuss/omarchy-hermes-api.git --enable
 cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm install --production
 ```
 
-Only needed for remote Hermes instances or custom configuration (see [Configuration](#️-configuration) section below for details):
-
-```bash
-echo 'export HERMES_API_SERVER_URL="http://<remote-host>:8642"' >> ~/.bashrc
-echo 'export HERMES_API_SERVER_KEY="<key>"' >> ~/.bashrc
-# Optional: customize server display name (defaults to "Hermes")
-echo 'export HERMES_API_SERVER_NAME="Hermes"' >> ~/.bashrc
-```
+Configure endpoints and multiplexed agent profiles directly in the flyout settings menu (gear icon ⚙️) or via `~/.config/omarchy-hermes-api/settings.json`.
 
 ---
 
 ## ✨ Features
 
 - **Status Bar Integration**: Live connection health indicator, activity badge, and one-click flyout popup in your Omarchy bar.
+- **Multiplexed Endpoints & Profiles**: Support multiple Hermes server instances and named agent profiles (personas) with per-profile routing, custom monograms, and agent colors.
+- **Target Filtering**: Quick dropdown to switch between unified views or filter sessions by specific endpoint and profile.
 - **Real-Time Streaming**: Low-latency token-by-token assistant response streaming powered by official OpenAI-compatible SSE endpoints.
 - **Rich Tool Execution Cards**: Live collapsible badges tracking agent tool calls (`hermes.tool.progress`), displaying terminal executions, file modifications, web searches, and JSON tool results.
 - **Session Management**:
@@ -45,30 +40,79 @@ echo 'export HERMES_API_SERVER_NAME="Hermes"' >> ~/.bashrc
 - **Rich Markdown Chat**: Formatted Markdown rendering in assistant responses with clickable links and syntax styling.
 - **Custom System Prompts**: Expandable per-session system prompt configuration directly from the empty chat view.
 - **Desktop Completion Notifications**: Interactive desktop notifications dispatched when Hermes finishes a response or encounters an error, featuring click-to-open IPC action to reopen the chat flyout.
-- **Zero-Config Auto-Discovery**: Automatically discovers local Hermes Agent server credentials from environment variables or `~/.hermes/.env`.
+- **In-App Settings UI**: Configure servers, ports, API keys, and multiplexed profiles directly inside the UI without editing files or restarting.
 
 ---
 
 ## ⚙️ Configuration
 
-The bridge automatically discovers server configuration in the following order of priority:
+Endpoints and agent profiles can be managed directly in the application using the **Settings** menu (gear icon ⚙️ in the upper right corner of the flyout panel).
 
-1. **Environment Variables**:
-   - `HERMES_API_SERVER_URL` (e.g. `http://127.0.0.1:8642`)
-   - `HERMES_API_SERVER_KEY` (API authentication key)
-   - `HERMES_API_SERVER_PORT` (Port override, defaults to `8642`)
-   - `HERMES_API_SERVER_NAME` (Optional display name override across UI, tooltip, and notifications; defaults to `Hermes`)
+### Manual JSON Configuration
 
-2. **Local Hermes Config File (`~/.hermes/.env`)**:
-   - `API_SERVER_URL`
-   - `API_SERVER_KEY`
-   - `API_SERVER_PORT` or `PORT`
-   - `HERMES_API_SERVER_NAME` (Optional display name override; defaults to `Hermes`)
+Settings are stored in an isolated, permission-restricted configuration file at:
 
-3. **Default Fallback**:
-   - URL: `http://127.0.0.1:8642/v1`
-   - Key: `dummy-key` (standard for local unauthenticated servers)
-   - Server Name: `Hermes`
+```
+~/.config/omarchy-hermes-api/settings.json
+```
+
+For security, this file is written with strict `0600` permissions (`-rw-------`) so your API keys remain private.
+
+#### Format & Example
+
+```json
+{
+  "activeTarget": {
+    "endpointId": "all",
+    "profileName": "all"
+  },
+  "endpoints": [
+    {
+      "id": "endpoint-default",
+      "name": "Local Hermes",
+      "url": "http://127.0.0.1",
+      "port": 8642,
+      "apiKey": "",
+      "profiles": [
+        {
+          "name": "researcher",
+          "apiKey": ""
+        },
+        {
+          "name": "podcast-writer",
+          "apiKey": ""
+        }
+      ]
+    },
+    {
+      "id": "endpoint-cloud",
+      "name": "Cloud Gateway",
+      "url": "https://hermes.example.com",
+      "port": 443,
+      "apiKey": "sk-example-token-12345",
+      "profiles": []
+    }
+  ]
+}
+```
+
+#### Fields
+
+| Field | Description |
+|---|---|
+| `activeTarget.endpointId` | ID of the active endpoint filter (`"all"` for unified view, or an endpoint ID). |
+| `activeTarget.profileName` | Active profile filter name (`"all"`, `""`, or a specific profile name). |
+| `endpoints` | Array of Hermes gateway or server instances. |
+| `endpoints[].id` | Unique identifier for the endpoint (e.g. `"endpoint-default"`). |
+| `endpoints[].name` | Human-readable label displayed in menus, headers, and monograms. |
+| `endpoints[].url` | Server hostname and protocol without path (e.g. `http://127.0.0.1` or `https://hermes.example.com`). |
+| `endpoints[].port` | Port number integer (1–65535, default: `8642`). |
+| `endpoints[].apiKey` | Bearer token authentication key (leave empty for unauthenticated local servers). |
+| `endpoints[].profiles` | Array of named multiplexed agent profiles. Each profile object has a `name` and optional per-profile `apiKey`. *(Note: The built-in default profile is automatically provided and does not need to be listed.)* |
+
+### Default Fallback
+
+If `settings.json` does not exist on initial startup, the plugin automatically seeds a default local endpoint pointing to `http://127.0.0.1:8642` and auto-discovers any profiles defined in `~/.hermes/profiles/`.
 
 ---
 

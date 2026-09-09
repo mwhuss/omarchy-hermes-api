@@ -279,6 +279,48 @@ async function testSettings() {
   }
 }
 
+async function testMonograms() {
+  console.log('Testing: monogram command and algorithm...');
+  const cases = [
+    { input: 'Luna Bot', expected: 'LB' },
+    { input: 'LunaBot', expected: 'LB' },
+    { input: 'Lunabot', expected: 'L' },
+    { input: 'aryabot', expected: 'A' },
+    { input: 'Deep Research Agent', expected: 'DR' }
+  ];
+  for (const c of cases) {
+    const res = await runBridge(['monogram', c.input]);
+    assert.strictEqual(res.code, 0);
+    const json = JSON.parse(res.stdout);
+    assert.strictEqual(json.monogram, c.expected, `Monogram for "${c.input}" should be "${c.expected}", got "${json.monogram}"`);
+    assert(json.color.startsWith('#'), 'Color should be hex string');
+  }
+  console.log('  ✔ monogram generation rules verified (2-word, CamelCase, 1-word)');
+}
+
+async function testListTargetsAndActiveTarget() {
+  console.log('Testing: list-targets and set-active-target commands...');
+  const targetsRes = await runBridge(['list-targets']);
+  assert.strictEqual(targetsRes.code, 0);
+  const targetsJson = JSON.parse(targetsRes.stdout);
+  assert.strictEqual(targetsJson.success, true);
+  assert(Array.isArray(targetsJson.targets), 'targets should be an array');
+  assert(targetsJson.targets.length > 0, 'at least one target endpoint');
+  const firstTarget = targetsJson.targets[0];
+  assert(firstTarget.endpointId, 'target must have endpointId');
+  assert(firstTarget.profiles.length > 0, 'target must have profiles');
+  assert.strictEqual(firstTarget.profiles[0].name, 'default', 'first profile must be default');
+  console.log(`  ✔ list-targets passed (${targetsJson.targets.length} endpoints checked)`);
+
+  const setRes = await runBridge(['set-active-target', firstTarget.endpointId, 'default']);
+  assert.strictEqual(setRes.code, 0);
+  const setJson = JSON.parse(setRes.stdout);
+  assert.strictEqual(setJson.success, true);
+  assert.strictEqual(setJson.activeTarget.endpointId, firstTarget.endpointId);
+  assert.strictEqual(setJson.activeTarget.profileName, 'default');
+  console.log('  ✔ set-active-target passed');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -287,6 +329,8 @@ async function runAllTests() {
   try {
     await testManifest();
     await testSettings();
+    await testMonograms();
+    await testListTargetsAndActiveTarget();
     await testStatus();
     await testListSessions();
     await testGetSession();
@@ -305,3 +349,4 @@ async function runAllTests() {
 }
 
 runAllTests();
+

@@ -67,4 +67,11 @@ _Avoid_: Preferences dialog, config window, options panel
 **Endpoint Configuration File**:
 The permission-restricted (`0600`) JSON file storing persistent Hermes Endpoints and Agent Profiles at `~/.config/omarchy-hermes-api/settings.json`.
 _Avoid_: Dotfile, plugin config, shell JSON
+**Agent Target**:
+A specific selectable destination pairing a Hermes Endpoint and an Agent Profile (or its default profile) for chat execution and session scoping.
+_Avoid_: Agent destination, route target, bot instance
+
+**Agent Picker**:
+An interactive selector allowing the user to designate the destination Agent Target when initiating a new Hermes Session or switching conversation context.
+_Avoid_: Bot selector, profile chooser, model picker
 

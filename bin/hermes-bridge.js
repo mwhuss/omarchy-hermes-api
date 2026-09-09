@@ -60,13 +60,120 @@ function loadSettingsFile() {
   return null;
 }
 
-function resolveConfig() {
+function discoverLocalHermesProfiles() {
+  const profilesDir = path.join(os.homedir(), '.hermes', 'profiles');
+  const discovered = [];
+  if (fs.existsSync(profilesDir)) {
+    try {
+      const entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const profName = entry.name;
+          if (profName.toLowerCase() === 'default') continue;
+          let apiKey = '';
+          const envPath = path.join(profilesDir, profName, '.env');
+          if (fs.existsSync(envPath)) {
+            try {
+              const content = fs.readFileSync(envPath, 'utf8');
+              content.split('\n').forEach(line => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith('#')) return;
+                const eqIdx = trimmed.indexOf('=');
+                if (eqIdx !== -1) {
+                  const k = trimmed.slice(0, eqIdx).trim();
+                  let v = trimmed.slice(eqIdx + 1).trim();
+                  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+                    v = v.slice(1, -1);
+                  }
+                  if (k === 'API_SERVER_KEY') {
+                    apiKey = v;
+                  }
+                }
+              });
+            } catch (e) {}
+          }
+          discovered.push({ name: profName, apiKey });
+        }
+      }
+    } catch (e) {}
+  }
+  return discovered;
+}
+
+function parseSessionIdentifier(sessionId, optEndpoint, optProfile) {
+  if (!sessionId) return { endpointId: optEndpoint, profileName: optProfile, rawSessionId: '' };
+  
+  let endpointId = optEndpoint;
+  let profileName = optProfile;
+  let rawSessionId = sessionId;
+
+  const parts = String(sessionId).split(':');
+  if (parts.length >= 3) {
+    if (!endpointId) endpointId = parts[0];
+    if (!profileName) profileName = parts[1];
+    rawSessionId = parts.slice(2).join(':');
+  }
+
+  return { endpointId, profileName, rawSessionId };
+}
+
+function getAgentMonogram(name) {
+  if (!name || typeof name !== 'string') return 'H';
+  const trimmed = name.trim();
+  if (!trimmed) return 'H';
+
+  const words = trimmed.split(/[\s\-_]+/).filter(Boolean);
+  if (words.length >= 2) {
+    return (words[0][0] + words[1][0]).toUpperCase();
+  }
+
+  const single = words[0];
+  const upperMatches = single.match(/[A-Z]/g);
+  if (upperMatches && upperMatches.length >= 2) {
+    return (upperMatches[0] + upperMatches[1]).toUpperCase();
+  }
+
+  return single[0].toUpperCase();
+}
+
+function getAgentColor(name) {
+  const palette = [
+    '#6366F1', // Indigo
+    '#8B5CF6', // Purple
+    '#EC4899', // Pink
+    '#F43F5E', // Rose
+    '#0EA5E9', // Sky
+    '#06B6D4', // Cyan
+    '#10B981', // Emerald
+    '#14B8A6', // Teal
+    '#F59E0B', // Amber
+    '#3B82F6', // Blue
+  ];
+  if (!name || typeof name !== 'string') return palette[0];
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash << 5) - hash + name.charCodeAt(i);
+    hash |= 0;
+  }
+  const idx = Math.abs(hash) % palette.length;
+  return palette[idx];
+}
+
+function resolveConfig(targetEndpointId, targetProfileName) {
   const hermesEnv = loadHermesEnvFile();
   const settings = loadSettingsFile();
 
   let targetEndpoint = null;
   if (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0) {
-    targetEndpoint = settings.endpoints[0];
+    if (targetEndpointId && targetEndpointId !== 'all') {
+      targetEndpoint = settings.endpoints.find(e => e.id === targetEndpointId || e.name === targetEndpointId);
+    }
+    if (!targetEndpoint && settings.activeTarget && settings.activeTarget.endpointId && settings.activeTarget.endpointId !== 'all') {
+      targetEndpoint = settings.endpoints.find(e => e.id === settings.activeTarget.endpointId || e.name === settings.activeTarget.endpointId);
+    }
+    if (!targetEndpoint) {
+      targetEndpoint = settings.endpoints[0];
+    }
   }
 
   // Precedence: explicit env vars > settings.json > ~/.hermes/.env > default 8642
@@ -86,39 +193,82 @@ function resolveConfig() {
     parsedUrl = new URL(`http://127.0.0.1:${defaultPort}`);
   }
 
-  // If port is not explicitly specified in URL and not standard 80/443 without default, apply default port
   if (!parsedUrl.port) {
-    // If it's a domain/IP without port, default to defaultPort
     parsedUrl.port = defaultPort;
   }
 
-  let rootUrl = parsedUrl.origin;
-  let baseUrl = `${rootUrl}/v1`;
+  const endpointId = targetEndpoint ? targetEndpoint.id : 'endpoint-default';
+  const endpointName = (targetEndpoint && targetEndpoint.name) || process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
+  const rootUrl = parsedUrl.origin;
+  const endpointApiKey = (targetEndpoint && targetEndpoint.apiKey) || process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || 'dummy-key';
 
-  const apiKey = process.env.HERMES_API_SERVER_KEY || (targetEndpoint && targetEndpoint.apiKey ? targetEndpoint.apiKey : null) || hermesEnv.API_SERVER_KEY || 'dummy-key';
-  const serverName = process.env.HERMES_API_SERVER_NAME || (targetEndpoint && targetEndpoint.name ? targetEndpoint.name : null) || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
+  // Check profile
+  let resolvedProfile = targetProfileName;
+  if (!resolvedProfile && settings && settings.activeTarget && settings.activeTarget.endpointId === endpointId) {
+    resolvedProfile = settings.activeTarget.profileName;
+  }
+  if (!resolvedProfile || resolvedProfile === 'all') {
+    resolvedProfile = 'default';
+  }
 
-  return {
-    rootUrl,
-    baseUrl,
-    port: parseInt(parsedUrl.port || defaultPort, 10),
-    apiKey,
-    serverName,
-  };
+  const isDefaultProfile = !resolvedProfile || resolvedProfile.toLowerCase() === 'default';
+
+  if (isDefaultProfile) {
+    return {
+      endpointId,
+      endpointName,
+      profileName: 'default',
+      isDefault: true,
+      rootUrl,
+      baseUrl: `${rootUrl}/v1`,
+      apiPrefix: '/api',
+      port: parseInt(parsedUrl.port || defaultPort, 10),
+      apiKey: endpointApiKey,
+      serverName: endpointName
+    };
+  } else {
+    // Custom profile
+    let profApiKey = '';
+    if (targetEndpoint && Array.isArray(targetEndpoint.profiles)) {
+      const found = targetEndpoint.profiles.find(p => {
+        const n = typeof p === 'string' ? p : p.name;
+        return n && n.toLowerCase() === resolvedProfile.toLowerCase();
+      });
+      if (found && typeof found === 'object' && found.apiKey) {
+        profApiKey = found.apiKey;
+      }
+    }
+    const isLocal = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
+    if (!profApiKey && isLocal) {
+      const discovered = discoverLocalHermesProfiles();
+      const d = discovered.find(p => p.name.toLowerCase() === resolvedProfile.toLowerCase());
+      if (d && d.apiKey) profApiKey = d.apiKey;
+    }
+
+    const finalApiKey = profApiKey || endpointApiKey;
+    const encProf = encodeURIComponent(resolvedProfile);
+
+    return {
+      endpointId,
+      endpointName,
+      profileName: resolvedProfile,
+      isDefault: false,
+      rootUrl,
+      baseUrl: `${rootUrl}/p/${encProf}/v1`,
+      apiPrefix: `/p/${encProf}/api`,
+      port: parseInt(parsedUrl.port || defaultPort, 10),
+      apiKey: finalApiKey,
+      serverName: `${endpointName} (${resolvedProfile})`
+    };
+  }
 }
 
-const config = resolveConfig();
-
-const openai = new OpenAI({
-  baseURL: config.baseUrl,
-  apiKey: config.apiKey,
-});
-
-async function handleStatus() {
+async function handleStatus(targetEndpointId, targetProfileName) {
+  const cfg = resolveConfig(targetEndpointId, targetProfileName);
   try {
-    const res = await fetch(`${config.baseUrl}/models`, {
+    const res = await fetch(`${cfg.baseUrl}/models`, {
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Accept': 'application/json'
       }
     });
@@ -129,58 +279,62 @@ async function handleStatus() {
       console.log(JSON.stringify({
         success: true,
         connected: true,
-        rootUrl: config.rootUrl,
-        baseUrl: config.baseUrl,
+        endpointId: cfg.endpointId,
+        profileName: cfg.profileName,
+        rootUrl: cfg.rootUrl,
+        baseUrl: cfg.baseUrl,
         models: models.length ? models : ['hermes-agent'],
-        serverName: config.serverName
+        serverName: cfg.serverName
       }));
     } else {
       console.log(JSON.stringify({
         success: false,
         connected: false,
+        endpointId: cfg.endpointId,
+        profileName: cfg.profileName,
         statusCode: res.status,
-        baseUrl: config.baseUrl,
+        baseUrl: cfg.baseUrl,
         error: `Server returned HTTP ${res.status}`,
-        serverName: config.serverName
+        serverName: cfg.serverName
       }));
     }
   } catch (err) {
     console.log(JSON.stringify({
       success: false,
       connected: false,
-      baseUrl: config.baseUrl,
+      endpointId: cfg.endpointId,
+      profileName: cfg.profileName,
+      baseUrl: cfg.baseUrl,
       error: err.message,
-      serverName: config.serverName
+      serverName: cfg.serverName
     }));
   }
 }
 
-async function handleListSessions() {
+async function fetchSessionsForConfig(cfg) {
   try {
-    let res = await fetch(`${config.rootUrl}/api/sessions`, {
+    let res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions`, {
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Accept': 'application/json'
       }
     });
 
     if (!res.ok) {
-      res = await fetch(`${config.baseUrl}/sessions`, {
+      res = await fetch(`${cfg.baseUrl}/sessions`, {
         headers: {
-          'Authorization': `Bearer ${config.apiKey}`,
+          'Authorization': `Bearer ${cfg.apiKey}`,
           'Accept': 'application/json'
         }
       });
     }
 
-    if (!res.ok) {
-      throw new Error(`Failed to fetch sessions: HTTP ${res.status}`);
-    }
+    if (!res.ok) return [];
 
     const raw = await res.json();
     const list = Array.isArray(raw) ? raw : (Array.isArray(raw.sessions) ? raw.sessions : (Array.isArray(raw.data) ? raw.data : []));
 
-    const normalized = list.map((s, idx) => {
+    return list.map((s, idx) => {
       let createdAt = s.created_at || s.createdAt || s.started_at;
       if (typeof createdAt === 'number') {
         createdAt = new Date(createdAt * 1000).toISOString();
@@ -195,9 +349,17 @@ async function handleListSessions() {
         updatedAt = createdAt;
       }
 
+      const rawId = s.id || s.session_id || `session-${idx}`;
+      const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawId}`;
+
       return {
-        id: s.id || s.session_id || `session-${idx}`,
-        title: s.title || s.preview || s.name || `Session ${s.id || idx}`,
+        id: compositeId,
+        raw_id: rawId,
+        endpoint_id: cfg.endpointId,
+        endpoint_name: cfg.endpointName,
+        profile_name: cfg.profileName,
+        target_id: `${cfg.endpointId}:${cfg.profileName}`,
+        title: s.title || s.preview || s.name || `Session ${rawId}`,
         created_at: createdAt,
         updated_at: updatedAt,
         source: s.source || s.platform || 'hermes',
@@ -205,13 +367,72 @@ async function handleListSessions() {
         model: s.model || 'hermes-agent'
       };
     });
+  } catch (err) {
+    return [];
+  }
+}
+
+async function handleListSessions(targetEndpointId, targetProfileName) {
+  try {
+    const settings = loadSettingsFile();
+    const isAll = !targetEndpointId || targetEndpointId === 'all';
+
+    let allSessions = [];
+
+    if (!isAll) {
+      const cfg = resolveConfig(targetEndpointId, targetProfileName);
+      allSessions = await fetchSessionsForConfig(cfg);
+    } else {
+      // Query all endpoints and profiles
+      const endpoints = (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0)
+        ? settings.endpoints
+        : [resolveConfig()];
+
+      const localProfiles = discoverLocalHermesProfiles();
+
+      const fetchPromises = [];
+      for (const ep of endpoints) {
+        // Default profile
+        const defaultCfg = resolveConfig(ep.id, 'default');
+        fetchPromises.push(fetchSessionsForConfig(defaultCfg));
+
+        // Custom profiles
+        const seen = new Set(['default']);
+        if (Array.isArray(ep.profiles)) {
+          for (const p of ep.profiles) {
+            const pName = typeof p === 'string' ? p : p.name;
+            if (pName && !seen.has(pName.toLowerCase())) {
+              seen.add(pName.toLowerCase());
+              const profCfg = resolveConfig(ep.id, pName);
+              fetchPromises.push(fetchSessionsForConfig(profCfg));
+            }
+          }
+        }
+
+        const isLocal = ep.url.includes('127.0.0.1') || ep.url.includes('localhost');
+        if (isLocal) {
+          for (const lp of localProfiles) {
+            if (!seen.has(lp.name.toLowerCase())) {
+              seen.add(lp.name.toLowerCase());
+              const profCfg = resolveConfig(ep.id, lp.name);
+              fetchPromises.push(fetchSessionsForConfig(profCfg));
+            }
+          }
+        }
+      }
+
+      const results = await Promise.all(fetchPromises);
+      for (const batch of results) {
+        allSessions = allSessions.concat(batch);
+      }
+    }
 
     // Sort newest updated first
-    normalized.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+    allSessions.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 
     console.log(JSON.stringify({
       success: true,
-      sessions: normalized
+      sessions: allSessions
     }));
   } catch (err) {
     console.log(JSON.stringify({
@@ -256,17 +477,19 @@ function formatToolContent(raw) {
   return { preview: firstLine, full: trimmed };
 }
 
-async function handleGetSession(sessionId) {
-  if (!sessionId) {
+async function handleGetSession(sessionId, optEndpoint, optProfile) {
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
+  if (!rawSessionId) {
     console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
     return;
   }
 
+  const cfg = resolveConfig(endpointId, profileName);
   try {
     let sessionObj = {};
-    let sessionRes = await fetch(`${config.rootUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+    let sessionRes = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Accept': 'application/json'
       }
     });
@@ -275,9 +498,9 @@ async function handleGetSession(sessionId) {
       const data = await sessionRes.json();
       sessionObj = data.session || data || {};
     } else {
-      sessionRes = await fetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+      sessionRes = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
         headers: {
-          'Authorization': `Bearer ${config.apiKey}`,
+          'Authorization': `Bearer ${cfg.apiKey}`,
           'Accept': 'application/json'
         }
       });
@@ -288,17 +511,17 @@ async function handleGetSession(sessionId) {
     }
 
     // 2. Fetch session messages
-    let msgRes = await fetch(`${config.rootUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    let msgRes = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}/messages`, {
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Accept': 'application/json'
       }
     });
 
     if (!msgRes.ok) {
-      msgRes = await fetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      msgRes = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}/messages`, {
         headers: {
-          'Authorization': `Bearer ${config.apiKey}`,
+          'Authorization': `Bearer ${cfg.apiKey}`,
           'Accept': 'application/json'
         }
       });
@@ -361,11 +584,21 @@ async function handleGetSession(sessionId) {
       };
     });
 
+    const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
       success: true,
+      id: compositeId,
+      raw_id: rawSessionId,
+      endpoint_id: cfg.endpointId,
+      endpoint_name: cfg.endpointName,
+      profile_name: cfg.profileName,
       session: {
-        id: sessionObj.id || sessionId,
-        title: sessionObj.title || sessionObj.name || `Session ${sessionId}`,
+        id: compositeId,
+        raw_id: rawSessionId,
+        endpoint_id: cfg.endpointId,
+        endpoint_name: cfg.endpointName,
+        profile_name: cfg.profileName,
+        title: sessionObj.title || sessionObj.name || `Session ${rawSessionId}`,
         messages,
         created_at: sessionObj.created_at || sessionObj.started_at,
         updated_at: sessionObj.updated_at || sessionObj.last_active
@@ -379,34 +612,40 @@ async function handleGetSession(sessionId) {
   }
 }
 
-async function handleDeleteSession(sessionId) {
-  if (!sessionId) {
+async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
+  if (!rawSessionId) {
     console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
     return;
   }
 
+  const cfg = resolveConfig(endpointId, profileName);
   try {
-    let res = await fetch(`${config.rootUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+    let res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       method: 'DELETE',
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Accept': 'application/json'
       }
     });
 
     if (!res.ok && res.status !== 404) {
-      res = await fetch(`${config.baseUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+      res = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${config.apiKey}`,
+          'Authorization': `Bearer ${cfg.apiKey}`,
           'Accept': 'application/json'
         }
       });
     }
 
+    const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
       success: true,
-      id: sessionId,
+      id: compositeId,
+      raw_id: rawSessionId,
+      endpoint_id: cfg.endpointId,
+      profile_name: cfg.profileName,
       deleted: true
     }));
   } catch (err) {
@@ -449,12 +688,29 @@ function sendDesktopNotification(title, message, isError = false) {
 }
 
 async function handleStreamChat(options) {
-  const { sessionId, prompt, model, history, systemPrompt, notify } = options;
+  const { sessionId, prompt, model, history, systemPrompt, notify, endpoint, profile } = options;
 
   if (!prompt || typeof prompt !== 'string') {
     process.stdout.write(JSON.stringify({ type: 'error', error: 'Prompt is required' }) + '\n');
     return;
   }
+
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, endpoint, profile);
+  const cfg = resolveConfig(endpointId, profileName);
+
+  let resolvedSessionId = rawSessionId;
+  if (!resolvedSessionId || String(resolvedSessionId).trim() === '') {
+    const timestamp = Date.now().toString(36);
+    const rand = Math.random().toString(36).substring(2, 7);
+    resolvedSessionId = `api-${timestamp}-${rand}`;
+  }
+
+  const compositeId = `${cfg.endpointId}:${cfg.profileName}:${resolvedSessionId}`;
+
+  const customHeaders = {
+    'X-Hermes-Session-Id': resolvedSessionId,
+    'X-Hermes-Source': 'omarchy-bar'
+  };
 
   const messages = [];
 
@@ -473,26 +729,27 @@ async function handleStreamChat(options) {
 
   messages.push({ role: 'user', content: prompt });
 
-  let resolvedSessionId = sessionId;
-  if (!resolvedSessionId || String(resolvedSessionId).trim() === '') {
-    const timestamp = Date.now().toString(36);
-    const rand = Math.random().toString(36).substring(2, 7);
-    resolvedSessionId = `api-${timestamp}-${rand}`;
-  }
-
-  const customHeaders = {
-    'X-Hermes-Session-Id': resolvedSessionId,
-    'X-Hermes-Source': 'omarchy-bar'
-  };
+  const isExplicitComposite = sessionId && String(sessionId).includes(':');
+  const emitSessionId = isExplicitComposite ? compositeId : resolvedSessionId;
 
   try {
     process.stdout.write(JSON.stringify({
       type: 'start',
-      session_id: resolvedSessionId,
+      session_id: emitSessionId,
+      raw_session_id: resolvedSessionId,
+      endpoint_id: cfg.endpointId,
+      endpoint_name: cfg.endpointName,
+      profile_name: cfg.profileName,
+      composite_id: compositeId,
       model: model || 'hermes-agent'
     }) + '\n');
 
-    const stream = await openai.chat.completions.create(
+    const openaiClient = new OpenAI({
+      baseURL: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+    });
+
+    const stream = await openaiClient.chat.completions.create(
       {
         model: model || 'hermes-agent',
         messages: messages.map(m => ({ role: m.role, content: m.content })),
@@ -515,7 +772,9 @@ async function handleStreamChat(options) {
         fullText += delta.content;
         process.stdout.write(JSON.stringify({
           type: 'delta',
-          session_id: resolvedSessionId,
+          session_id: emitSessionId,
+          raw_session_id: resolvedSessionId,
+          composite_id: compositeId,
           content: delta.content
         }) + '\n');
       }
@@ -526,7 +785,9 @@ async function handleStreamChat(options) {
           if (fn && fn.name) {
             process.stdout.write(JSON.stringify({
               type: 'tool_progress',
-              session_id: resolvedSessionId,
+              session_id: emitSessionId,
+              raw_session_id: resolvedSessionId,
+              composite_id: compositeId,
               tool: fn.name,
               status: 'running',
               label: fn.arguments || '',
@@ -544,7 +805,9 @@ async function handleStreamChat(options) {
         const ev = eventData;
         process.stdout.write(JSON.stringify({
           type: 'tool_progress',
-          session_id: resolvedSessionId,
+          session_id: emitSessionId,
+          raw_session_id: resolvedSessionId,
+          composite_id: compositeId,
           tool: ev.tool || ev.name || 'tool',
           status: ev.status || 'running',
           label: ev.label || ev.detail || ev.message || '',
@@ -556,38 +819,48 @@ async function handleStreamChat(options) {
 
     process.stdout.write(JSON.stringify({
       type: 'done',
-      session_id: resolvedSessionId,
+      session_id: emitSessionId,
+      raw_session_id: resolvedSessionId,
+      composite_id: compositeId,
+      endpoint_id: cfg.endpointId,
+      profile_name: cfg.profileName,
       full_text: fullText,
       finish_reason: 'stop'
     }) + '\n');
 
     if (notify) {
-      sendDesktopNotification(config.serverName, fullText, false);
+      const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
+      sendDesktopNotification(notifTitle, fullText, false);
     }
   } catch (err) {
     process.stdout.write(JSON.stringify({
       type: 'error',
-      session_id: resolvedSessionId,
+      session_id: emitSessionId,
+      raw_session_id: resolvedSessionId,
+      composite_id: compositeId,
       error: err.message
     }) + '\n');
 
     if (notify) {
-      sendDesktopNotification(`${config.serverName} - Error`, err.message, true);
+      const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
+      sendDesktopNotification(`${notifTitle} - Error`, err.message, true);
     }
   }
 }
 
-async function handleRenameSession(sessionId, newTitle) {
-  if (!sessionId || !newTitle) {
+async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile) {
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
+  if (!rawSessionId || !newTitle) {
     console.log(JSON.stringify({ success: false, error: 'Session ID and new title required' }));
     return;
   }
 
+  const cfg = resolveConfig(endpointId, profileName);
   try {
-    const res = await fetch(`${config.rootUrl}/api/sessions/${encodeURIComponent(sessionId)}`, {
+    const res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       method: 'PATCH',
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
+        'Authorization': `Bearer ${cfg.apiKey}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
@@ -602,13 +875,187 @@ async function handleRenameSession(sessionId, newTitle) {
 
     const data = await res.json();
     const sessionObj = data.session || data;
+    const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
       success: true,
-      id: sessionId,
+      id: compositeId,
+      raw_id: rawSessionId,
+      endpoint_id: cfg.endpointId,
+      profile_name: cfg.profileName,
       title: sessionObj.title || newTitle
     }));
   } catch (err) {
     console.log(JSON.stringify({ success: false, error: err.message }));
+  }
+}
+
+async function handleListTargets() {
+  const settings = loadSettingsFile() || { endpoints: [] };
+  const hermesEnv = loadHermesEnvFile();
+  let endpoints = settings.endpoints;
+
+  if (!endpoints || endpoints.length === 0) {
+    // Seed default endpoint
+    const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10);
+    let rawUrl = process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL || 'http://127.0.0.1';
+    let defaultUrl = rawUrl;
+    try {
+      const p = new URL(rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? rawUrl : `http://${rawUrl}`);
+      defaultUrl = `${p.protocol}//${p.hostname}`;
+    } catch (e) {
+      defaultUrl = 'http://127.0.0.1';
+    }
+    const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
+    const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
+
+    endpoints = [{
+      id: 'endpoint-default',
+      name: defaultName,
+      url: defaultUrl,
+      port: isNaN(defaultPort) ? 8642 : defaultPort,
+      apiKey: defaultKey,
+      profiles: []
+    }];
+  }
+
+  const localProfiles = discoverLocalHermesProfiles();
+
+  // Test all endpoints in parallel
+  const targetResults = await Promise.all(endpoints.map(async ep => {
+    let rawUrl = ep.url;
+    if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+      rawUrl = `http://${rawUrl}`;
+    }
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(rawUrl);
+    } catch (e) {
+      parsedUrl = new URL(`http://127.0.0.1:${ep.port || 8642}`);
+    }
+    if (!parsedUrl.port && ep.port) {
+      parsedUrl.port = String(ep.port);
+    }
+    const rootUrl = parsedUrl.origin;
+    const isLocal = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
+
+    let connected = false;
+    let models = ['hermes-agent'];
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      const res = await fetch(`${rootUrl}/v1/models`, {
+        headers: {
+          'Authorization': `Bearer ${ep.apiKey || ''}`,
+          'Accept': 'application/json'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        connected = true;
+        const data = await res.json();
+        if (Array.isArray(data.data) && data.data.length > 0) {
+          models = data.data.map(m => m.id);
+        }
+      }
+    } catch (e) {
+      connected = false;
+    }
+
+    // Merge profiles: default profile is always present
+    const profilesList = [{
+      name: 'default',
+      isDefault: true,
+      targetId: `${ep.id}:default`,
+      displayName: `${ep.name} (default)`,
+      monogram: getAgentMonogram(ep.name),
+      color: getAgentColor(ep.name)
+    }];
+
+    const existingNames = new Set(['default']);
+    if (Array.isArray(ep.profiles)) {
+      for (const p of ep.profiles) {
+        const pName = typeof p === 'string' ? p : p.name;
+        if (pName && !existingNames.has(pName.toLowerCase())) {
+          existingNames.add(pName.toLowerCase());
+          profilesList.push({
+            name: pName,
+            isDefault: false,
+            targetId: `${ep.id}:${pName}`,
+            displayName: `${ep.name} • ${pName}`,
+            monogram: getAgentMonogram(pName),
+            color: getAgentColor(pName)
+          });
+        }
+      }
+    }
+
+    if (isLocal) {
+      for (const lp of localProfiles) {
+        if (!existingNames.has(lp.name.toLowerCase())) {
+          existingNames.add(lp.name.toLowerCase());
+          profilesList.push({
+            name: lp.name,
+            isDefault: false,
+            targetId: `${ep.id}:${lp.name}`,
+            displayName: `${ep.name} • ${lp.name}`,
+            monogram: getAgentMonogram(lp.name),
+            color: getAgentColor(lp.name)
+          });
+        }
+      }
+    }
+
+    return {
+      id: ep.id,
+      endpointId: ep.id,
+      name: ep.name,
+      endpointName: ep.name,
+      url: ep.url,
+      port: ep.port,
+      connected,
+      models,
+      monogram: getAgentMonogram(ep.name),
+      color: getAgentColor(ep.name),
+      profiles: profilesList
+    };
+  }));
+
+  console.log(JSON.stringify({
+    success: true,
+    targets: targetResults,
+    activeTarget: settings.activeTarget || { endpointId: 'all', profileName: 'all' }
+  }));
+}
+
+async function handleSetActiveTarget(endpointId, profileName) {
+  const settingsPath = getSettingsPath();
+  let settings = loadSettingsFile() || { endpoints: [] };
+  settings.activeTarget = {
+    endpointId: endpointId || 'all',
+    profileName: profileName || 'all'
+  };
+
+  try {
+    const configDir = path.dirname(settingsPath);
+    if (!fs.existsSync(configDir)) {
+      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    }
+    const tmpPath = path.join(configDir, `settings.json.tmp.${process.pid}.${Date.now()}`);
+    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(tmpPath, 0o600);
+    fs.renameSync(tmpPath, settingsPath);
+    fs.chmodSync(settingsPath, 0o600);
+
+    console.log(JSON.stringify({
+      success: true,
+      activeTarget: settings.activeTarget
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to save active target: ${err.message}`
+    }));
   }
 }
 
@@ -633,7 +1080,10 @@ async function handleGetSettings() {
         console.log(JSON.stringify({
           success: true,
           seeded: false,
-          settings: data
+          settings: {
+            activeTarget: data.activeTarget || { endpointId: 'all', profileName: 'all' },
+            endpoints: data.endpoints
+          }
         }));
         return;
       }
@@ -657,6 +1107,7 @@ async function handleGetSettings() {
   const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
 
   const seededSettings = {
+    activeTarget: { endpointId: 'all', profileName: 'all' },
     endpoints: [
       {
         id: 'endpoint-default',
@@ -826,7 +1277,16 @@ async function handleSaveSettings(rawInput) {
     });
   }
 
+  let activeTarget = data.activeTarget;
+  if (!activeTarget) {
+    const existing = loadSettingsFile();
+    if (existing && existing.activeTarget) {
+      activeTarget = existing.activeTarget;
+    }
+  }
+
   const cleanSettings = {
+    activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
     endpoints: validatedEndpoints
   };
 
@@ -855,29 +1315,66 @@ async function handleSaveSettings(rawInput) {
   }
 }
 
+function parseCliOptions(args) {
+  let endpoint = null;
+  let profile = null;
+  const rest = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if ((arg === '--endpoint' || arg === '-e') && i + 1 < args.length) {
+      endpoint = args[++i];
+    } else if ((arg === '--profile' || arg === '-p') && i + 1 < args.length) {
+      profile = args[++i];
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { endpoint, profile, rest };
+}
+
 async function main() {
-  const args = process.argv.slice(2);
-  const command = args[0] || 'status';
+  const rawArgs = process.argv.slice(2);
+  const { endpoint, profile, rest } = parseCliOptions(rawArgs);
+  const command = rest[0] || 'status';
 
   switch (command) {
     case 'status':
-      await handleStatus();
+      await handleStatus(endpoint, profile);
       break;
 
+    case 'list-targets':
+      await handleListTargets();
+      break;
+
+    case 'set-active-target':
+      await handleSetActiveTarget(rest[1] || endpoint, rest[2] || profile);
+      break;
+
+    case 'monogram': {
+      const name = rest.slice(1).join(' ') || 'Hermes';
+      console.log(JSON.stringify({
+        success: true,
+        name,
+        monogram: getAgentMonogram(name),
+        color: getAgentColor(name)
+      }));
+      break;
+    }
+
     case 'list-sessions':
-      await handleListSessions();
+      await handleListSessions(endpoint, profile);
       break;
 
     case 'get-session':
-      await handleGetSession(args[1]);
+      await handleGetSession(rest[1], endpoint, profile);
       break;
 
     case 'rename-session':
-      await handleRenameSession(args[1], args.slice(2).join(' '));
+      await handleRenameSession(rest[1], rest.slice(2).join(' '), endpoint, profile);
       break;
 
     case 'delete-session':
-      await handleDeleteSession(args[1]);
+      await handleDeleteSession(rest[1], endpoint, profile);
       break;
 
     case 'get-settings':
@@ -885,7 +1382,7 @@ async function main() {
       break;
 
     case 'save-settings':
-      await handleSaveSettings(args[1]);
+      await handleSaveSettings(rest[1]);
       break;
 
     case 'stream-chat': {
@@ -896,24 +1393,24 @@ async function main() {
       let history = [];
       let notify = false;
 
-      for (let i = 1; i < args.length; i++) {
-        if ((args[i] === '--session' || args[i] === '--session-id') && args[i + 1]) {
-          sessionId = args[++i];
-        } else if (args[i] === '--prompt' && args[i + 1]) {
-          prompt = args[++i];
-        } else if ((args[i] === '--system' || args[i] === '--system-prompt') && args[i + 1]) {
-          systemPrompt = args[++i];
-        } else if (args[i] === '--model' && args[i + 1]) {
-          model = args[++i];
-        } else if (args[i] === '--notify') {
+      for (let i = 1; i < rest.length; i++) {
+        if ((rest[i] === '--session' || rest[i] === '--session-id') && rest[i + 1]) {
+          sessionId = rest[++i];
+        } else if (rest[i] === '--prompt' && rest[i + 1]) {
+          prompt = rest[++i];
+        } else if ((rest[i] === '--system' || rest[i] === '--system-prompt') && rest[i + 1]) {
+          systemPrompt = rest[++i];
+        } else if (rest[i] === '--model' && rest[i + 1]) {
+          model = rest[++i];
+        } else if (rest[i] === '--notify') {
           notify = true;
-        } else if (args[i] === '--history' && args[i + 1]) {
+        } else if (rest[i] === '--history' && rest[i + 1]) {
           try {
-            history = JSON.parse(args[++i]);
+            history = JSON.parse(rest[++i]);
           } catch (e) {
             history = [];
           }
-        } else if (args[i] === '--json-input') {
+        } else if (rest[i] === '--json-input') {
           const stdinData = fs.readFileSync(0, 'utf-8');
           try {
             const parsed = JSON.parse(stdinData);
@@ -929,14 +1426,14 @@ async function main() {
         }
       }
 
-      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify });
+      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify, endpoint, profile });
       break;
     }
 
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-sessions, get-session, delete-session, stream-chat, get-settings, save-settings`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, monogram, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
       }));
       process.exit(1);
   }
@@ -946,3 +1443,4 @@ main().catch(err => {
   console.error(JSON.stringify({ success: false, error: err.message }));
   process.exit(1);
 });
+
