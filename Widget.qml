@@ -1643,7 +1643,7 @@ Panel {
   }
 
   Timer {
-    interval: Math.max(5000, Number(root.settings?.refreshIntervalSec || 30) * 1000)
+    interval: Math.max(5000, Number(root.setting("refreshIntervalSec", 30)) * 1000)
     running: true
     repeat: true
     onTriggered: {
@@ -1687,6 +1687,7 @@ Panel {
           anchors.bottom: iconGlyph.bottom
           anchors.rightMargin: -1
           anchors.bottomMargin: 2
+          visible: root.setting("showBadge", true)
           color: root.isStreaming ? "#10B981" : (root.isConnected ? "#3B82F6" : "#EF4444")
 
           SequentialAnimation on opacity {
@@ -2735,12 +2736,17 @@ Panel {
                               }
 
                               Text {
-                                text: (modelData.tool || "tool") + (modelData.label ? (": " + modelData.label) : "")
+                                text: {
+                                  var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
+                                  var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
+                                  return tool + (label ? (": " + label) : "")
+                                }
                                 font.family: root.fontFamily
                                 font.pixelSize: 10
                                 font.weight: Font.Medium
                                 color: root.toolBadgeText
                                 elide: Text.ElideRight
+                                maximumLineCount: 1
                                 Layout.fillWidth: true
                               }
 
@@ -2808,12 +2814,17 @@ Panel {
                               }
 
                               Text {
-                                text: (modelData.name || "tool") + (modelData.summary ? (": " + modelData.summary) : "")
+                                text: {
+                                  var name = String(modelData.name || "tool").replace(/\s+/g, " ").trim()
+                                  var summary = String(modelData.summary || "").replace(/\s+/g, " ").trim()
+                                  return name + (summary ? (": " + summary) : "")
+                                }
                                 font.family: root.fontFamily
                                 font.pixelSize: 10
                                 font.weight: Font.Medium
                                 color: root.toolBadgeText
                                 elide: Text.ElideRight
+                                maximumLineCount: 1
                                 Layout.fillWidth: true
                               }
 
@@ -2879,12 +2890,17 @@ Panel {
                             }
 
                             Text {
-                              text: "Tool Output" + (modelData.tool_name ? (" (" + modelData.tool_name + ")") : "") + ": " + (modelData.tool_preview || String(modelData.content || "").replace(/\s+/g, " ").trim())
+                              text: {
+                                var prefix = "Tool Output" + (modelData.tool_name ? (" (" + modelData.tool_name + ")") : "") + ": "
+                                var preview = String(modelData.tool_preview || modelData.content || "").replace(/\s+/g, " ").trim()
+                                return prefix + preview
+                              }
                               font.family: root.fontFamily
                               font.pixelSize: 10
                               font.weight: Font.Medium
                               color: root.toolBadgeText
                               elide: Text.ElideRight
+                              maximumLineCount: 1
                               Layout.fillWidth: true
                             }
 
@@ -2981,12 +2997,18 @@ Panel {
                           }
 
                           Text {
-                            text: (modelData.tool || "tool") + (modelData.label ? (": " + modelData.label) : "") + " (" + (modelData.status || "running") + ")"
+                            text: {
+                              var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
+                              var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
+                              var status = String(modelData.status || "running").replace(/\s+/g, " ").trim()
+                              return tool + (label ? (": " + label) : "") + " (" + status + ")"
+                            }
                             font.family: root.fontFamily
                             font.pixelSize: 10
                             font.weight: Font.Medium
                             color: root.toolBadgeText
                             elide: Text.ElideRight
+                            maximumLineCount: 1
                             Layout.fillWidth: true
                           }
                         }
@@ -4214,7 +4236,7 @@ Panel {
                       text: "Hermes (All Agents)"
                       font.family: root.fontFamily
                       font.pixelSize: 11
-                      font.weight: Font.SemiBold
+                      font.weight: Font.DemiBold
                       color: root.foreground
                       elide: Text.ElideRight
                       Layout.fillWidth: true
@@ -4538,7 +4560,7 @@ Panel {
                           text: agentTargetCard.modelData.displayName
                           font.family: root.fontFamily
                           font.pixelSize: 11
-                          font.weight: Font.SemiBold
+                          font.weight: Font.DemiBold
                           color: root.foreground
                           elide: Text.ElideRight
                           Layout.fillWidth: true

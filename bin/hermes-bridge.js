@@ -656,7 +656,7 @@ async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
   }
 }
 
-function sendDesktopNotification(title, message, isError = false) {
+function sendDesktopNotification(title, message, isError = false, appName = 'Hermes') {
   const { spawn } = require('child_process');
   let cleanMsg = String(message || '').trim();
   cleanMsg = cleanMsg.replace(/```[\s\S]*?```/g, '[Code]');
@@ -677,7 +677,7 @@ function sendDesktopNotification(title, message, isError = false) {
     'fi';
 
   try {
-    const child = spawn('bash', ['-lc', script, 'bash', config.serverName, urgency, glyph, title, cleanMsg], {
+    const child = spawn('bash', ['-lc', script, 'bash', appName || 'Hermes', urgency, glyph, title, cleanMsg], {
       detached: true,
       stdio: 'ignore'
     });
@@ -830,7 +830,7 @@ async function handleStreamChat(options) {
 
     if (notify) {
       const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
-      sendDesktopNotification(notifTitle, fullText, false);
+      sendDesktopNotification(notifTitle, fullText, false, cfg.serverName || notifTitle);
     }
   } catch (err) {
     process.stdout.write(JSON.stringify({
@@ -843,7 +843,7 @@ async function handleStreamChat(options) {
 
     if (notify) {
       const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
-      sendDesktopNotification(`${notifTitle} - Error`, err.message, true);
+      sendDesktopNotification(`${notifTitle} - Error`, err.message, true, cfg.serverName || notifTitle);
     }
   }
 }

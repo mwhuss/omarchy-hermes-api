@@ -143,6 +143,7 @@ async function testStreamChatNotify() {
 
   assert(types.includes('start'), 'Should have a start event');
   assert(types.includes('done'), 'Should have a done event');
+  assert(!res.stderr.includes('ReferenceError'), 'stderr should not contain ReferenceError');
   console.log('  ✔ stream-chat with --notify completed successfully');
 }
 
