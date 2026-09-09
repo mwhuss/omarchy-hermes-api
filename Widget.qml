@@ -249,14 +249,14 @@ Panel {
     refreshSessions()
     if (endpointId && endpointId !== "all") {
       setActiveTargetProc.command = [
-        "node", root.scriptPath, "set-active-target",
+        "/usr/bin/node", "--", root.scriptPath, "set-active-target",
         "--endpoint", endpointId,
         "--profile", profileName || "default"
       ]
       setActiveTargetProc.running = true
     } else {
       setActiveTargetProc.command = [
-        "node", root.scriptPath, "set-active-target",
+        "/usr/bin/node", "--", root.scriptPath, "set-active-target",
         "--endpoint", "all",
         "--profile", ""
       ]
@@ -400,7 +400,9 @@ Panel {
     onTriggered: {
       root.refreshSessions()
       if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
-        var getArgs = ["node", root.scriptPath, "get-session", root.selectedSessionId]
+        getSessionProc.buf = ""
+        getSessionProc.errBuf = ""
+        var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", root.selectedSessionId]
         var selTarget = root.getSessionTarget(root.selectedSessionId)
         if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
         if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
@@ -439,13 +441,17 @@ Panel {
 
   function checkStatus() {
     if (statusProc.running) return
-    statusProc.command = ["node", root.scriptPath, "status"]
+    statusProc.buf = ""
+    statusProc.errBuf = ""
+    statusProc.command = ["/usr/bin/node", "--", root.scriptPath, "status"]
     statusProc.running = true
   }
 
   function refreshTargets() {
     if (listTargetsProc.running) return
-    listTargetsProc.command = ["node", root.scriptPath, "list-targets"]
+    listTargetsProc.buf = ""
+    listTargetsProc.errBuf = ""
+    listTargetsProc.command = ["/usr/bin/node", "--", root.scriptPath, "list-targets"]
     listTargetsProc.running = true
   }
 
@@ -513,7 +519,9 @@ Panel {
 
   function refreshSessions() {
     if (listSessionsProc.running) return
-    var args = ["node", root.scriptPath, "list-sessions"]
+    listSessionsProc.buf = ""
+    listSessionsProc.errBuf = ""
+    var args = ["/usr/bin/node", "--", root.scriptPath, "list-sessions"]
     if (root.activeTarget && root.activeTarget.endpointId && root.activeTarget.endpointId !== "all") {
       args.push("--endpoint", root.activeTarget.endpointId)
       if (root.activeTarget.profileName) {
@@ -633,9 +641,12 @@ Panel {
     root.scrollToBottomInstantly()
 
     if (getSessionProc.running) {
+      getSessionProc.signal(15)
       getSessionProc.running = false
     }
-    var getArgs = ["node", root.scriptPath, "get-session", sessionId]
+    getSessionProc.buf = ""
+    getSessionProc.errBuf = ""
+    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", sessionId]
     var selTarget = root.getSessionTarget(sessionId)
     if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
     if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
@@ -713,7 +724,9 @@ Panel {
       root.sessionCache = uc
     }
 
-    var renArgs = ["node", root.scriptPath, "rename-session", selectedSessionId, trimmed]
+    renameSessionProc.buf = ""
+    renameSessionProc.errBuf = ""
+    var renArgs = ["/usr/bin/node", "--", root.scriptPath, "rename-session", "--", selectedSessionId, trimmed]
     var renTarget = root.getSessionTarget(selectedSessionId)
     if (renTarget.endpointId) renArgs.push("--endpoint", renTarget.endpointId)
     if (renTarget.profileName) renArgs.push("--profile", renTarget.profileName)
@@ -784,7 +797,9 @@ Panel {
         root.startNewSession()
       }
     }
-    var delArgs = ["node", root.scriptPath, "delete-session", sessionId]
+    deleteSessionProc.buf = ""
+    deleteSessionProc.errBuf = ""
+    var delArgs = ["/usr/bin/node", "--", root.scriptPath, "delete-session", "--", sessionId]
     var delTarget = root.getSessionTarget(sessionId)
     if (delTarget.endpointId) delArgs.push("--endpoint", delTarget.endpointId)
     if (delTarget.profileName) delArgs.push("--profile", delTarget.profileName)
@@ -914,44 +929,45 @@ Panel {
 
     root.promoteSessionToTop(targetSessionId, root.activeSessionTitle, text)
 
-    var args = [
-      "node",
-      root.scriptPath,
-      "stream-chat",
-      "--prompt", text,
-      "--model", root.currentModel,
-      "--session", targetSessionId
-    ]
+    var streamPayload = {
+      prompt: text,
+      model: root.currentModel,
+      sessionId: targetSessionId,
+      notify: root.setting("notifyOnComplete", true)
+    }
 
     var sessionTarget = root.getSessionTarget(targetSessionId)
     if (sessionTarget.endpointId) {
-      args.push("--endpoint", sessionTarget.endpointId)
+      streamPayload.endpoint = sessionTarget.endpointId
     }
     if (sessionTarget.profileName) {
-      args.push("--profile", sessionTarget.profileName)
+      streamPayload.profile = sessionTarget.profileName
     }
 
     if (sessionSystemPrompt && sessionSystemPrompt.trim() !== "") {
-      args.push("--system", sessionSystemPrompt.trim())
+      streamPayload.systemPrompt = sessionSystemPrompt.trim()
     }
 
     var historySlice = currentMsgs.slice(0, -1).map(function(m) {
       return { role: m.role, content: m.content }
     })
-    args.push("--history", JSON.stringify(historySlice))
+    streamPayload.history = historySlice
 
-    root.startSessionStreamProcess(targetSessionId, args)
+    root.startSessionStreamProcess(targetSessionId, streamPayload)
 
     root.scrollToBottomInstantly()
   }
 
-  function startSessionStreamProcess(targetSessionId, args) {
+  function startSessionStreamProcess(targetSessionId, payload) {
     if (!targetSessionId) return
     var procObj = streamProcessComponent.createObject(root, {
       targetSessionId: targetSessionId,
-      command: args,
+      command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"],
       running: true
     })
+    if (payload) {
+      procObj.write(JSON.stringify(payload) + "\n")
+    }
     var updated = Object.assign({}, root.activeStreams)
     updated[targetSessionId] = {
       proc: procObj,
@@ -1146,18 +1162,25 @@ Panel {
     }
   }
 
+  function sanitizePlain(str, maxLen) {
+    if (!str) return ""
+    return String(str)
+      .replace(/[\x00-\x1f\x7f]/g, " ")
+      .replace(/[<>&]/g, "")
+      .trim()
+      .slice(0, maxLen || 128)
+  }
+
   function postCompletionNotification(content, isError, sessionId) {
     var notifyOnComp = root.setting("notifyOnComplete", true)
     var notifyOnErr = root.setting("notifyOnError", true)
 
     if (isError) {
       if (!notifyOnErr) {
-        console.log("hermes-bridge/notify: skipped due to notifyOnError=false")
         return
       }
     } else {
       if (!notifyOnComp) {
-        console.log("hermes-bridge/notify: skipped due to notifyOnComplete=false")
         return
       }
     }
@@ -1191,28 +1214,21 @@ Panel {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
-    var glyph = isError ? "\u{f015a}" : root.setting("icon", "\u{f06d3}")
+    var cleanTitle = root.sanitizePlain(title, 80)
+    var cleanPreview = root.sanitizePlain(preview, 140)
+    var cleanAppName = root.sanitizePlain(root.serverName, 40) || "Hermes"
     var urgency = isError ? "critical" : "normal"
 
-    var execCmd = ["quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call", "com.mwhuss.omarchy-hermes-api", "openSession", targetId]
+    var notifyArgs = [
+      "/usr/bin/notify-send",
+      "-a", cleanAppName,
+      "-u", urgency,
+      "--",
+      cleanTitle,
+      cleanPreview
+    ]
 
-    var bashArgs = [
-      "bash", "-lc",
-      'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
-      '  omarchy-notification-send --app-name "$1" -u "$2" -g "$3" "$4" "$5" --exec "${@:6}"; ' +
-      'else ' +
-      '  notify-send -a "$1" -u "$2" "$4" "$5"; ' +
-      'fi',
-      "bash",
-      root.serverName,
-      urgency,
-      glyph,
-      title,
-      preview
-    ].concat(execCmd)
-
-    console.log("hermes-bridge/notify: dispatching notification: " + title + " -> " + preview + " (sessionId=" + targetId + ")")
-    Quickshell.execDetached(bashArgs)
+    Quickshell.execDetached(notifyArgs)
   }
 
   IpcHandler {
@@ -1263,15 +1279,24 @@ Panel {
       root.isAgentPickerOpen = !root.isAgentPickerOpen
       return "ok"
     }
+    function isValidSessionId(id) {
+      if (!id || typeof id !== "string") return false
+      if (id.length > 128) return false
+      if (id.indexOf("..") !== -1 || id.indexOf("/") !== -1 || id.indexOf("\\") !== -1) return false
+      return /^[A-Za-z0-9:._-]+$/.test(id)
+    }
     function openSession(sessionId: string): string {
       root.open()
       if (sessionId && String(sessionId).trim() !== "") {
         var cleanId = String(sessionId).trim()
+        if (!isValidSessionId(cleanId)) return "invalid-session-id"
         if (root.selectedSessionId !== cleanId) {
           root.selectSession(cleanId)
         } else {
           if (!getSessionProc.running) {
-            getSessionProc.command = ["node", root.scriptPath, "get-session", cleanId]
+            getSessionProc.buf = ""
+            getSessionProc.errBuf = ""
+            getSessionProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", cleanId]
             getSessionProc.running = true
           }
         }
@@ -1282,8 +1307,11 @@ Panel {
       root.refreshSessions()
       var cleanId = sessionId ? String(sessionId).trim() : ""
       if (cleanId && root.selectedSessionId === cleanId) {
+        if (!isValidSessionId(cleanId)) return "invalid-session-id"
         if (!getSessionProc.running) {
-          getSessionProc.command = ["node", root.scriptPath, "get-session", cleanId]
+          getSessionProc.buf = ""
+          getSessionProc.errBuf = ""
+          getSessionProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", cleanId]
           getSessionProc.running = true
         }
       }
@@ -1301,7 +1329,9 @@ Panel {
     root.settingsErrorMessage = ""
     root.settingsSuccessMessage = ""
     root.isConfirmingDeleteEndpoint = false
-    getSettingsProc.command = ["node", root.scriptPath, "get-settings"]
+    getSettingsProc.buf = ""
+    getSettingsProc.errBuf = ""
+    getSettingsProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-settings"]
     getSettingsProc.running = true
   }
 
@@ -1455,145 +1485,289 @@ Panel {
       }
     }
 
-    saveSettingsProc.command = ["node", root.scriptPath, "save-settings", JSON.stringify({ endpoints: eps })]
+    saveSettingsProc.buf = ""
+    saveSettingsProc.errBuf = ""
+    saveSettingsProc.command = ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
     saveSettingsProc.running = true
+    saveSettingsProc.write(JSON.stringify({ endpoints: eps }) + "\n")
   }
 
   // ------------------------------------------------------------- Processes
 
   Process {
     id: statusProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
-    command: []
-    stdout: StdioCollector {
-      id: statusStdout
-      waitForEnd: true
-      onStreamFinished: root.parseStatus(statusStdout.text)
+    command: ["/usr/bin/node", "--", root.scriptPath, "status"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (statusProc.buf.length < 65536) {
+          statusProc.buf += chunk
+        } else {
+          statusProc.signal(15)
+          statusProc.buf = ""
+        }
+      }
     }
-    stderr: StdioCollector {
-      id: statusStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (statusStderr.text && statusStderr.text.trim()) console.warn("hermes-bridge/status stderr:", statusStderr.text)
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (statusProc.errBuf.length < 8192) {
+          statusProc.errBuf += chunk
+        }
       }
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0) {
+      if (exitCode === 0) {
+        root.parseStatus(statusProc.buf)
+      } else {
         root.isConnected = false
-        root.statusError = String(statusStderr.text || "").trim() || "Status exit code " + exitCode
+        root.statusError = String(statusProc.errBuf || "").trim() || "Status exit code " + exitCode
       }
+      statusProc.buf = ""
+      statusProc.errBuf = ""
     }
   }
 
   Process {
     id: listSessionsProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
     command: []
-    stdout: StdioCollector {
-      id: listStdout
-      waitForEnd: true
-      onStreamFinished: root.parseSessions(listStdout.text)
-    }
-    stderr: StdioCollector {
-      id: listStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (listStderr.text && listStderr.text.trim()) console.warn("hermes-bridge/list-sessions stderr:", listStderr.text)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (listSessionsProc.buf.length < 1048576) {
+          listSessionsProc.buf += chunk
+        } else {
+          listSessionsProc.signal(15)
+          listSessionsProc.buf = ""
+        }
       }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (listSessionsProc.errBuf.length < 8192) {
+          listSessionsProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.parseSessions(listSessionsProc.buf)
+      } else {
+        if (listSessionsProc.errBuf && listSessionsProc.errBuf.trim()) console.warn("hermes-bridge/list-sessions stderr:", listSessionsProc.errBuf)
+      }
+      listSessionsProc.buf = ""
+      listSessionsProc.errBuf = ""
     }
   }
 
   Process {
     id: getSessionProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
     command: []
-    stdout: StdioCollector {
-      id: getSessionStdout
-      waitForEnd: true
-      onStreamFinished: root.parseSessionDetail(getSessionStdout.text)
-    }
-    stderr: StdioCollector {
-      id: getSessionStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (getSessionStderr.text && getSessionStderr.text.trim()) console.warn("hermes-bridge/get-session stderr:", getSessionStderr.text)
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (getSessionProc.buf.length < 1048576) {
+          getSessionProc.buf += chunk
+        } else {
+          getSessionProc.signal(15)
+          getSessionProc.buf = ""
+        }
       }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (getSessionProc.errBuf.length < 8192) {
+          getSessionProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.parseSessionDetail(getSessionProc.buf)
+      } else {
+        if (getSessionProc.errBuf && getSessionProc.errBuf.trim()) console.warn("hermes-bridge/get-session stderr:", getSessionProc.errBuf)
+      }
+      getSessionProc.buf = ""
+      getSessionProc.errBuf = ""
     }
   }
 
   Process {
     id: deleteSessionProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
     command: []
-    stdout: StdioCollector {
-      id: deleteStdout
-      waitForEnd: true
-      onStreamFinished: root.refreshSessions()
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (deleteSessionProc.buf.length < 65536) {
+          deleteSessionProc.buf += chunk
+        }
+      }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (deleteSessionProc.errBuf.length < 8192) {
+          deleteSessionProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      root.refreshSessions()
+      deleteSessionProc.buf = ""
+      deleteSessionProc.errBuf = ""
     }
   }
 
   Process {
     id: renameSessionProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
     command: []
-    stdout: StdioCollector {
-      id: renameStdout
-      waitForEnd: true
-      onStreamFinished: root.refreshSessions()
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (renameSessionProc.buf.length < 65536) {
+          renameSessionProc.buf += chunk
+        }
+      }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (renameSessionProc.errBuf.length < 8192) {
+          renameSessionProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      root.refreshSessions()
+      renameSessionProc.buf = ""
+      renameSessionProc.errBuf = ""
     }
   }
 
   Process {
     id: getSettingsProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
-    command: []
-    stdout: StdioCollector {
-      id: getSettingsStdout
-      waitForEnd: true
-      onStreamFinished: root.parseSettings(getSettingsStdout.text)
-    }
-    stderr: StdioCollector {
-      id: getSettingsStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (getSettingsStderr.text && getSettingsStderr.text.trim()) console.warn("hermes-bridge/get-settings stderr:", getSettingsStderr.text)
+    command: ["/usr/bin/node", "--", root.scriptPath, "get-settings"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (getSettingsProc.buf.length < 131072) {
+          getSettingsProc.buf += chunk
+        } else {
+          getSettingsProc.signal(15)
+          getSettingsProc.buf = ""
+        }
       }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (getSettingsProc.errBuf.length < 8192) {
+          getSettingsProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.parseSettings(getSettingsProc.buf)
+      } else {
+        if (getSettingsProc.errBuf && getSettingsProc.errBuf.trim()) console.warn("hermes-bridge/get-settings stderr:", getSettingsProc.errBuf)
+      }
+      getSettingsProc.buf = ""
+      getSettingsProc.errBuf = ""
     }
   }
 
   Process {
     id: saveSettingsProc
+    property string buf: ""
+    property string errBuf: ""
+    stdinEnabled: true
     running: false
-    command: []
-    stdout: StdioCollector {
-      id: saveSettingsStdout
-      waitForEnd: true
-      onStreamFinished: root.parseSaveSettingsResult(saveSettingsStdout.text)
-    }
-    stderr: StdioCollector {
-      id: saveSettingsStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (saveSettingsStderr.text && saveSettingsStderr.text.trim()) console.warn("hermes-bridge/save-settings stderr:", saveSettingsStderr.text)
+    command: ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (saveSettingsProc.buf.length < 65536) {
+          saveSettingsProc.buf += chunk
+        } else {
+          saveSettingsProc.signal(15)
+          saveSettingsProc.buf = ""
+        }
       }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (saveSettingsProc.errBuf.length < 8192) {
+          saveSettingsProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.parseSaveSettingsResult(saveSettingsProc.buf)
+      } else {
+        if (saveSettingsProc.errBuf && saveSettingsProc.errBuf.trim()) console.warn("hermes-bridge/save-settings stderr:", saveSettingsProc.errBuf)
+        root.settingsErrorMessage = String(saveSettingsProc.errBuf || "").trim() || "Failed to save settings (code " + exitCode + ")"
+      }
+      saveSettingsProc.buf = ""
+      saveSettingsProc.errBuf = ""
     }
   }
 
   Process {
     id: listTargetsProc
+    property string buf: ""
+    property string errBuf: ""
     running: false
-    command: []
-    stdout: StdioCollector {
-      id: listTargetsStdout
-      waitForEnd: true
-      onStreamFinished: root.parseTargets(listTargetsStdout.text)
-    }
-    stderr: StdioCollector {
-      id: listTargetsStderr
-      waitForEnd: true
-      onStreamFinished: {
-        if (listTargetsStderr.text && listTargetsStderr.text.trim()) console.warn("hermes-bridge/list-targets stderr:", listTargetsStderr.text)
+    command: ["/usr/bin/node", "--", root.scriptPath, "list-targets"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (listTargetsProc.buf.length < 262144) {
+          listTargetsProc.buf += chunk
+        } else {
+          listTargetsProc.signal(15)
+          listTargetsProc.buf = ""
+        }
       }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (listTargetsProc.errBuf.length < 8192) {
+          listTargetsProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.parseTargets(listTargetsProc.buf)
+      } else {
+        if (listTargetsProc.errBuf && listTargetsProc.errBuf.trim()) console.warn("hermes-bridge/list-targets stderr:", listTargetsProc.errBuf)
+      }
+      listTargetsProc.buf = ""
+      listTargetsProc.errBuf = ""
     }
   }
 
@@ -1608,30 +1782,56 @@ Panel {
     Process {
       id: proc
       property string targetSessionId: ""
+      property string errBuf: ""
+      stdinEnabled: true
       running: false
-      command: []
+      command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"]
       stdout: SplitParser {
         onRead: function(line) {
-          root.handleStreamEvent(proc.targetSessionId, line)
+          if (String(line).length <= 262144) {
+            root.handleStreamEvent(proc.targetSessionId, line)
+          }
         }
       }
-      stderr: StdioCollector {
-        id: procStderr
-        waitForEnd: true
-        onStreamFinished: function(text) {
-          if (text && text.trim()) console.warn("hermes-bridge/stream-chat stderr [" + proc.targetSessionId + "]:", text)
+      stderr: SplitParser {
+        splitMarker: ""
+        onRead: function(chunk) {
+          if (proc.errBuf.length < 8192) {
+            proc.errBuf += chunk
+          }
         }
       }
       onExited: function(exitCode) {
+        if (proc.errBuf && proc.errBuf.trim()) console.warn("hermes-bridge/stream-chat stderr [" + proc.targetSessionId + "]:", proc.errBuf)
         if (root.isSessionStreaming(proc.targetSessionId)) {
           var streamInfo = root.activeStreams[proc.targetSessionId]
           var hasContent = streamInfo && streamInfo.streamingContent
           if (exitCode !== 0 && !hasContent) {
-            var errText = String(procStderr.text || "").trim() || "Bridge process error (code " + exitCode + ")"
+            var errText = String(proc.errBuf || "").trim() || "Bridge process error (code " + exitCode + ")"
             root.finishSessionStream(proc.targetSessionId, errText, true, streamInfo ? streamInfo.toolEvents : [])
           } else if (exitCode !== 0 && hasContent) {
             root.finishSessionStream(proc.targetSessionId, streamInfo.streamingContent, false, streamInfo.toolEvents)
           }
+        }
+      }
+    }
+  }
+
+  Component.onDestruction: {
+    if (statusProc.running) statusProc.signal(15)
+    if (listSessionsProc.running) listSessionsProc.signal(15)
+    if (getSessionProc.running) getSessionProc.signal(15)
+    if (deleteSessionProc.running) deleteSessionProc.signal(15)
+    if (renameSessionProc.running) renameSessionProc.signal(15)
+    if (getSettingsProc.running) getSettingsProc.signal(15)
+    if (saveSettingsProc.running) saveSettingsProc.signal(15)
+    if (listTargetsProc.running) listTargetsProc.signal(15)
+    if (setActiveTargetProc.running) setActiveTargetProc.signal(15)
+    if (root.activeStreams) {
+      for (var sid in root.activeStreams) {
+        var s = root.activeStreams[sid]
+        if (s && s.proc && s.proc.running) {
+          try { s.proc.signal(15) } catch (e) {}
         }
       }
     }
@@ -1723,7 +1923,7 @@ Panel {
       }
     }
 
-    return lines.join("\n")
+    return root.sanitizePlain(lines.join("\n"), 256)
   }
 
   // ------------------------------------------------------------- Bar Button
@@ -1839,6 +2039,7 @@ Panel {
             spacing: 8
 
             Text {
+  textFormat: Text.PlainText
               text: root.setting("icon", "\u{f06d3}")
               font.family: root.fontFamily
               font.pixelSize: 14
@@ -1847,6 +2048,7 @@ Panel {
 
             // Settings Title (when settings is open)
             Text {
+  textFormat: Text.PlainText
               visible: root.isSettingsOpen
               text: root.serverName + " • Settings"
               font.family: root.fontFamily
@@ -1891,6 +2093,7 @@ Panel {
                 }
 
                 Text {
+  textFormat: Text.PlainText
                   text: root.activeTargetDisplayName()
                   font.family: root.fontFamily
                   font.pixelSize: 13
@@ -1899,6 +2102,7 @@ Panel {
                 }
 
                 Text {
+  textFormat: Text.PlainText
                   text: "\uF078" // Chevron down
                   font.family: root.fontFamily
                   font.pixelSize: 9
@@ -1944,6 +2148,7 @@ Panel {
                 spacing: 6
 
                 Text {
+  textFormat: Text.PlainText
                   text: "\uF067" // Plus icon
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -1951,6 +2156,7 @@ Panel {
                 }
 
                 Text {
+  textFormat: Text.PlainText
                   text: "New Session"
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -1976,6 +2182,7 @@ Panel {
               }
 
               Text {
+  textFormat: Text.PlainText
                 id: refreshIcon
                 anchors.centerIn: parent
                 text: "\uF021" // Refresh icon
@@ -2019,6 +2226,7 @@ Panel {
               }
 
               Text {
+  textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: "\uF013" // Gear icon
                 font.family: root.fontFamily
@@ -2066,6 +2274,7 @@ Panel {
                   spacing: 6
 
                   Text {
+  textFormat: Text.PlainText
                     text: "\uF002" // Search icon
                     font.family: root.fontFamily
                     font.pixelSize: 10
@@ -2083,6 +2292,7 @@ Panel {
                     onTextChanged: root.searchQuery = text
 
                     Text {
+  textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
                       text: "Search sessions..."
@@ -2148,6 +2358,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: root.getSessionMonogram(modelData)
@@ -2164,6 +2375,7 @@ Panel {
                       spacing: 2
 
                       Text {
+  textFormat: Text.PlainText
                         text: modelData.title || "Untitled Session"
                         font.family: root.fontFamily
                         font.pixelSize: 11
@@ -2174,6 +2386,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         text: root.getSessionAgentName(modelData)
                         font.family: root.fontFamily
                         font.pixelSize: 9
@@ -2210,6 +2423,7 @@ Panel {
                 }
 
                 Text {
+  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: root.filteredSessions.length === 0 ? "No sessions found" : ""
                   font.family: root.fontFamily
@@ -2264,6 +2478,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: root.getSessionMonogram(root.currentSessionItem())
@@ -2275,6 +2490,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: root.selectedSessionId ? root.activeSessionTitle : "New Session"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -2293,6 +2509,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
+  textFormat: Text.PlainText
                         id: targetBadgeText
                         anchors.centerIn: parent
                         text: root.getSessionAgentDisplayName(root.currentSessionItem())
@@ -2328,6 +2545,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF044" // Edit / Pen icon
                         font.family: root.fontFamily
@@ -2356,6 +2574,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF1F8" // Trash icon
                         font.family: root.fontFamily
@@ -2377,6 +2596,7 @@ Panel {
                     spacing: 6
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Delete this session?"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -2408,6 +2628,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00C" // Checkmark
                         font.family: root.fontFamily
@@ -2432,6 +2653,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00D" // Times / Cross
                         font.family: root.fontFamily
@@ -2490,6 +2712,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00C" // Checkmark
                         font.family: root.fontFamily
@@ -2514,6 +2737,7 @@ Panel {
                       }
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00D" // Times / Cross
                         font.family: root.fontFamily
@@ -2573,6 +2797,7 @@ Panel {
                     spacing: 12
 
                     Text {
+  textFormat: Text.PlainText
                       text: root.setting("icon", "\u{f06d3}")
                       font.family: root.fontFamily
                       font.pixelSize: 32
@@ -2581,6 +2806,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "How can " + root.serverName + " help you today?"
                       font.family: root.fontFamily
                       font.pixelSize: 14
@@ -2590,6 +2816,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Type a prompt below to assign a task or start a conversation."
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -2627,6 +2854,7 @@ Panel {
                         spacing: 6
 
                         Text {
+  textFormat: Text.PlainText
                           text: "\uF013" // Gear icon
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -2634,6 +2862,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: root.sessionSystemPrompt ? "Custom System Prompt Active" : "Set System Prompt (Optional)"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -2642,6 +2871,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: root.showSystemPromptInput ? "\uF077" : "\uF078" // Chevron up/down
                           font.family: root.fontFamily
                           font.pixelSize: 8
@@ -2672,6 +2902,7 @@ Panel {
                         onTextChanged: root.sessionSystemPrompt = text
 
                         Text {
+  textFormat: Text.PlainText
                           anchors.top: parent.top
                           anchors.left: parent.left
                           text: "e.g. You are a concise Linux assistant who writes clean bash scripts..."
@@ -2709,6 +2940,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           id: pill1Text
                           anchors.centerIn: parent
                           text: "🌤 Check Weather"
@@ -2739,6 +2971,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           id: pill2Text
                           anchors.centerIn: parent
                           text: "⚡ System Summary"
@@ -2800,6 +3033,7 @@ Panel {
                               spacing: 6
 
                               Text {
+  textFormat: Text.PlainText
                                 text: modelData.emoji || "\uF0AD"
                                 font.family: modelData.emoji ? "sans-serif" : root.fontFamily
                                 font.pixelSize: 11
@@ -2807,6 +3041,7 @@ Panel {
                               }
 
                               Text {
+  textFormat: Text.PlainText
                                 text: {
                                   var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
                                   var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
@@ -2822,6 +3057,7 @@ Panel {
                               }
 
                               Text {
+  textFormat: Text.PlainText
                                 text: liveEventBox.expanded ? "\uF077" : "\uF078"
                                 font.family: root.fontFamily
                                 font.pixelSize: 9
@@ -2831,6 +3067,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               visible: liveEventBox.expanded && (!!modelData.output || !!modelData.detail)
                               text: modelData.output || modelData.detail || ""
                               font.family: "monospace"
@@ -2878,6 +3115,7 @@ Panel {
                               spacing: 6
 
                               Text {
+  textFormat: Text.PlainText
                                 text: "\uF0AD" // Wrench
                                 font.family: root.fontFamily
                                 font.pixelSize: 10
@@ -2885,6 +3123,7 @@ Panel {
                               }
 
                               Text {
+  textFormat: Text.PlainText
                                 text: {
                                   var name = String(modelData.name || "tool").replace(/\s+/g, " ").trim()
                                   var summary = String(modelData.summary || "").replace(/\s+/g, " ").trim()
@@ -2900,6 +3139,7 @@ Panel {
                               }
 
                               Text {
+  textFormat: Text.PlainText
                                 text: toolCallBox.expanded ? "\uF077" : "\uF078"
                                 font.family: root.fontFamily
                                 font.pixelSize: 9
@@ -2908,6 +3148,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               visible: toolCallBox.expanded
                               text: modelData.arguments || modelData.summary || ""
                               font.family: "monospace"
@@ -2954,6 +3195,7 @@ Panel {
                             spacing: 6
 
                             Text {
+  textFormat: Text.PlainText
                               text: "\uF0AD"
                               font.family: root.fontFamily
                               font.pixelSize: 10
@@ -2961,6 +3203,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               text: {
                                 var prefix = "Tool Output" + (modelData.tool_name ? (" (" + modelData.tool_name + ")") : "") + ": "
                                 var preview = String(modelData.tool_preview || modelData.content || "").replace(/\s+/g, " ").trim()
@@ -2976,6 +3219,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               text: toolResultBox.expanded ? "\uF077" : "\uF078"
                               font.family: root.fontFamily
                               font.pixelSize: 9
@@ -2984,6 +3228,7 @@ Panel {
                           }
 
                           Text {
+  textFormat: Text.PlainText
                             visible: toolResultBox.expanded
                             text: modelData.tool_formatted || String(modelData.content || "").trim()
                             font.family: "monospace"
@@ -3015,13 +3260,14 @@ Panel {
                           font.pixelSize: 11
                           color: root.foreground
                           wrapMode: Text.Wrap
-                          textFormat: modelData.role === "assistant" ? Text.MarkdownText : Text.PlainText
+                          textFormat: Text.PlainText
                           onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                         }
                       }
 
                       // Subtle timestamp
                       Text {
+  textFormat: Text.PlainText
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
                         text: root.formatTime(modelData.timestamp)
                         font.family: root.fontFamily
@@ -3061,6 +3307,7 @@ Panel {
                           spacing: 6
 
                           Text {
+  textFormat: Text.PlainText
                             text: modelData.emoji || "\uF0AD"
                             font.family: modelData.emoji ? "sans-serif" : root.fontFamily
                             font.pixelSize: 11
@@ -3068,6 +3315,7 @@ Panel {
                           }
 
                           Text {
+  textFormat: Text.PlainText
                             text: {
                               var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
                               var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
@@ -3103,6 +3351,7 @@ Panel {
                         visible: !root.currentStreamingContent
 
                         Text {
+  textFormat: Text.PlainText
                           text: "●"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3117,6 +3366,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: root.serverName + " is thinking..."
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -3134,7 +3384,7 @@ Panel {
                         font.pixelSize: 11
                         color: root.foreground
                         wrapMode: Text.Wrap
-                        textFormat: Text.MarkdownText
+                        textFormat: Text.PlainText
                         onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                       }
                     }
@@ -3201,6 +3451,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       anchors.verticalCenter: parent.verticalCenter
                       anchors.left: parent.left
                       text: "Ask " + root.serverName + " a question or assign a task..."
@@ -3236,6 +3487,7 @@ Panel {
                   }
 
                   Text {
+  textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: root.isCurrentSessionStreaming ? "\uF04D" : "\uF1D8" // Stop vs Send Paper Airplane
                     font.family: root.fontFamily
@@ -3271,6 +3523,7 @@ Panel {
                 Layout.fillWidth: true
 
                 Text {
+  textFormat: Text.PlainText
                   text: "Endpoints"
                   font.family: root.fontFamily
                   font.pixelSize: 12
@@ -3301,6 +3554,7 @@ Panel {
                     spacing: 4
 
                     Text {
+  textFormat: Text.PlainText
                       text: "\uF067" // Plus
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -3308,6 +3562,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Add"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -3363,6 +3618,7 @@ Panel {
                         spacing: 2
 
                         Text {
+  textFormat: Text.PlainText
                           text: modelData.name || "Untitled Endpoint"
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -3373,6 +3629,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: (modelData.url || "http://127.0.0.1") + (modelData.port ? (":" + modelData.port) : "")
                           font.family: root.fontFamily
                           font.pixelSize: 9
@@ -3390,6 +3647,7 @@ Panel {
                     height: 100
 
                     Text {
+  textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "No endpoints\nClick + Add"
                       font.family: root.fontFamily
@@ -3443,6 +3701,7 @@ Panel {
                   height: 200
 
                   Text {
+  textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: "Select an endpoint on the left or click '+ Add' to create one."
                     font.family: root.fontFamily
@@ -3462,6 +3721,7 @@ Panel {
                     Layout.fillWidth: true
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Endpoint Configuration"
                       font.family: root.fontFamily
                       font.pixelSize: 12
@@ -3501,6 +3761,7 @@ Panel {
                         spacing: 4
 
                         Text {
+  textFormat: Text.PlainText
                           text: "\uF1F8" // Trash
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3508,6 +3769,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: root.isConfirmingDeleteEndpoint ? "Confirm Delete?" : "Delete Endpoint"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3524,6 +3786,7 @@ Panel {
                     spacing: 4
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Display Name"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -3571,6 +3834,7 @@ Panel {
                       spacing: 4
 
                       Text {
+  textFormat: Text.PlainText
                         text: "URL (e.g. http://127.0.0.1)"
                         font.family: root.fontFamily
                         font.pixelSize: 10
@@ -3613,6 +3877,7 @@ Panel {
                       spacing: 4
 
                       Text {
+  textFormat: Text.PlainText
                         text: "Port"
                         font.family: root.fontFamily
                         font.pixelSize: 10
@@ -3656,6 +3921,7 @@ Panel {
                     spacing: 4
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Endpoint API Key"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -3711,6 +3977,7 @@ Panel {
                           }
 
                           Text {
+  textFormat: Text.PlainText
                             anchors.centerIn: parent
                             text: root.maskEndpointApiKey ? "\uF070" : "\uF06E"
                             font.family: root.fontFamily
@@ -3736,6 +4003,7 @@ Panel {
                     ColumnLayout {
                       spacing: 2
                       Text {
+  textFormat: Text.PlainText
                         text: "Agent Profiles"
                         font.family: root.fontFamily
                         font.pixelSize: 12
@@ -3743,6 +4011,7 @@ Panel {
                         color: root.foreground
                       }
                       Text {
+  textFormat: Text.PlainText
                         text: "Profiles inherit the endpoint key unless overridden"
                         font.family: root.fontFamily
                         font.pixelSize: 9
@@ -3773,6 +4042,7 @@ Panel {
                         spacing: 4
 
                         Text {
+  textFormat: Text.PlainText
                           text: "\uF067"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3780,6 +4050,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           text: "Add Profile"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3820,6 +4091,7 @@ Panel {
                             spacing: 6
 
                             Text {
+  textFormat: Text.PlainText
                               text: "default"
                               font.family: root.fontFamily
                               font.pixelSize: 11
@@ -3835,6 +4107,7 @@ Panel {
                               implicitHeight: 16
 
                               Text {
+  textFormat: Text.PlainText
                                 id: defaultBadgeText
                                 anchors.centerIn: parent
                                 text: "hermes-agent"
@@ -3865,6 +4138,7 @@ Panel {
                             spacing: 6
 
                             Text {
+  textFormat: Text.PlainText
                               Layout.fillWidth: true
                               text: "Inherits endpoint credentials"
                               font.family: root.fontFamily
@@ -3882,6 +4156,7 @@ Panel {
                           color: "transparent"
 
                           Text {
+  textFormat: Text.PlainText
                             anchors.centerIn: parent
                             text: "\uF023" // Lock icon
                             font.family: root.fontFamily
@@ -3934,6 +4209,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               anchors.verticalCenter: parent.verticalCenter
                               text: "profile name"
                               font.family: root.fontFamily
@@ -3972,6 +4248,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               anchors.verticalCenter: parent.verticalCenter
                               text: "Inherited from Endpoint"
                               font.family: root.fontFamily
@@ -3997,6 +4274,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               anchors.centerIn: parent
                               text: profRowItem.maskProfKey ? "\uF070" : "\uF06E"
                               font.family: root.fontFamily
@@ -4021,6 +4299,7 @@ Panel {
                             }
 
                             Text {
+  textFormat: Text.PlainText
                               anchors.centerIn: parent
                               text: "\uF1F8" // Trash
                               font.family: root.fontFamily
@@ -4033,6 +4312,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       visible: !settingsFormCol.curEp || !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
                       text: "No custom agent profiles configured. Click '+ Add Profile' to add one."
                       font.family: root.fontFamily
@@ -4079,6 +4359,7 @@ Panel {
                     spacing: 6
 
                     Text {
+  textFormat: Text.PlainText
                       text: "\uF00D" // Cross
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4086,6 +4367,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: root.settingsErrorMessage
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4112,6 +4394,7 @@ Panel {
                     spacing: 6
 
                     Text {
+  textFormat: Text.PlainText
                       text: "\uF00C" // Check
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4119,6 +4402,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: root.settingsSuccessMessage
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4154,6 +4438,7 @@ Panel {
                   }
 
                   Text {
+  textFormat: Text.PlainText
                     id: cancelTxt
                     anchors.centerIn: parent
                     text: "Back"
@@ -4184,6 +4469,7 @@ Panel {
                     spacing: 6
 
                     Text {
+  textFormat: Text.PlainText
                       text: "\uF00C" // Check
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4191,6 +4477,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Save Settings"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -4290,6 +4577,7 @@ Panel {
                     Layout.alignment: Qt.AlignVCenter
 
                     Text {
+  textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "\u{f06d3}" // Feather
                       font.family: root.fontFamily
@@ -4304,6 +4592,7 @@ Panel {
                     spacing: 1
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Hermes (All Agents)"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -4314,6 +4603,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "Unified view • All endpoints & profiles"
                       font.family: root.fontFamily
                       font.pixelSize: 9
@@ -4324,6 +4614,7 @@ Panel {
                   }
 
                   Text {
+  textFormat: Text.PlainText
                     visible: root.activeTarget.endpointId === "all"
                     text: "\uF00C" // Checkmark
                     font.family: root.fontFamily
@@ -4372,6 +4663,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: epGroupCol.modelData.name || "Endpoint"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4429,6 +4721,7 @@ Panel {
                           Layout.alignment: Qt.AlignVCenter
 
                           Text {
+  textFormat: Text.PlainText
                             anchors.centerIn: parent
                             anchors.verticalCenterOffset: 1
                             text: profCard.modelData.monogram || root.getMonogram(profCard.modelData.isDefault ? epGroupCol.modelData.name : profCard.modelData.name)
@@ -4445,6 +4738,7 @@ Panel {
                           spacing: 1
 
                           Text {
+  textFormat: Text.PlainText
                             text: profCard.modelData.isDefault ? "Default" : profCard.modelData.name
                             font.family: root.fontFamily
                             font.pixelSize: 11
@@ -4455,6 +4749,7 @@ Panel {
                           }
 
                           Text {
+  textFormat: Text.PlainText
                             text: profCard.modelData.isDefault ? "Default agent profile" : "Multiplexed profile"
                             font.family: root.fontFamily
                             font.pixelSize: 9
@@ -4465,6 +4760,7 @@ Panel {
                         }
 
                         Text {
+  textFormat: Text.PlainText
                           visible: profCard.isActive
                           text: "\uF00C" // Checkmark
                           font.family: root.fontFamily
@@ -4538,6 +4834,7 @@ Panel {
                 spacing: 6
 
                 Text {
+  textFormat: Text.PlainText
                   text: "Start New Session With"
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -4548,6 +4845,7 @@ Panel {
                 Item { Layout.fillWidth: true }
 
                 Text {
+  textFormat: Text.PlainText
                   text: root.allAgentTargets.length + (root.allAgentTargets.length === 1 ? " profile" : " profiles")
                   font.family: root.fontFamily
                   font.pixelSize: 9
@@ -4609,6 +4907,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
+  textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: agentTargetCard.modelData.monogram || root.getMonogram(agentTargetCard.modelData.displayName)
@@ -4628,6 +4927,7 @@ Panel {
                         Layout.fillWidth: true
                         spacing: 6
                         Text {
+  textFormat: Text.PlainText
                           text: agentTargetCard.modelData.displayName
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4645,6 +4945,7 @@ Panel {
                           implicitWidth: defaultTag.implicitWidth + 8
 
                           Text {
+  textFormat: Text.PlainText
                             id: defaultTag
                             anchors.centerIn: parent
                             text: "Default"
@@ -4669,6 +4970,7 @@ Panel {
                           Layout.alignment: Qt.AlignVCenter
                         }
                         Text {
+  textFormat: Text.PlainText
                           text: agentTargetCard.modelData.endpointName + " • " + (agentTargetCard.modelData.isDefault ? "default profile" : agentTargetCard.modelData.profileName)
                           font.family: root.fontFamily
                           font.pixelSize: 9
@@ -4680,6 +4982,7 @@ Panel {
                     }
 
                     Text {
+  textFormat: Text.PlainText
                       text: "\uF061" // Right arrow
                       font.family: root.fontFamily
                       font.pixelSize: 10

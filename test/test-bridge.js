@@ -75,6 +75,19 @@ async function testStreamChat() {
   assert(types.includes('start'), 'Should have a start event');
   assert(types.includes('done') || types.includes('error'), 'Should finish with done or error event');
   console.log('  ✔ stream-chat passed with events:', types.filter((v, i, a) => a.indexOf(v) === i).join(', '));
+
+  console.log('Testing: stream-chat with --json-input stdin pipeline...');
+  const jsonInputRes = await runBridge(['stream-chat', '--json-input'], JSON.stringify({
+    prompt: 'Respond with "JSON_INPUT_OK" only.'
+  }) + '\n');
+  assert.strictEqual(jsonInputRes.code, 0, `Exit code should be 0, got ${jsonInputRes.code}`);
+  const jsonInputLines = jsonInputRes.stdout.trim().split('\n');
+  assert(jsonInputLines.length > 0, 'Should output at least one line');
+  const jsonEvents = jsonInputLines.map(l => JSON.parse(l));
+  const jsonTypes = jsonEvents.map(e => e.type);
+  assert(jsonTypes.includes('start'), 'Should have start event');
+  assert(jsonTypes.includes('done') || jsonTypes.includes('error'), 'Should finish with done or error event');
+  console.log('  ✔ stream-chat --json-input pipeline passed');
 }
 
 async function testGetSession() {
@@ -249,6 +262,25 @@ async function testSettings() {
     assert.strictEqual(savedData.endpoints[0].profiles[0].name, 'coder', 'Only custom coder profile should be saved');
     assert.strictEqual(savedData.endpoints[0].profiles.some(p => p.name === 'default'), false, 'Default profile must never be saved in JSON');
     console.log('  ✔ default profile omission from JSON verified');
+
+    console.log('Testing: save-settings via stdin pipeline (--stdin)...');
+    const stdinPayload = {
+      endpoints: [
+        {
+          id: 'stdin-endpoint',
+          name: 'Stdin Endpoint',
+          url: 'http://127.0.0.1',
+          port: 8642,
+          apiKey: 'stdin-secret-key',
+          profiles: []
+        }
+      ]
+    };
+    const stdinRes = await runBridge(['save-settings', '--stdin'], JSON.stringify(stdinPayload) + '\n');
+    assert.strictEqual(stdinRes.code, 0, `Exit code should be 0, got ${stdinRes.code}`);
+    const stdinJson = JSON.parse(stdinRes.stdout);
+    assert.strictEqual(stdinJson.success, true, 'save-settings --stdin should succeed');
+    console.log('  ✔ save-settings --stdin pipeline verified');
 
     console.log('Testing: save-settings validation...');
     // Invalid port

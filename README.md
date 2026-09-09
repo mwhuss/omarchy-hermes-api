@@ -15,7 +15,7 @@ Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweigh
 omarchy plugin add https://github.com/mwhuss/omarchy-hermes-api.git --enable
 
 # 2. Install bridge dependencies
-cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm install --production
+cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm ci --omit=dev
 ```
 
 Configure endpoints and multiplexed agent profiles directly in the flyout settings menu (gear icon ⚙️) or via `~/.config/omarchy-hermes-api/settings.json`.
@@ -36,7 +36,7 @@ Configure endpoints and multiplexed agent profiles directly in the flyout settin
   - Automatic loading of the most recent active session.
 - **Rich Markdown Chat**: Formatted Markdown rendering in assistant responses with clickable links and syntax styling.
 - **Custom System Prompts**: Expandable per-session system prompt configuration directly from the empty chat view.
-- **Desktop Completion Notifications**: Interactive desktop notifications dispatched when Hermes finishes a response or encounters an error, featuring click-to-open IPC action to reopen the chat flyout.
+- **Desktop Completion Notifications**: Standard desktop notifications dispatched via `/usr/bin/notify-send` when Hermes finishes a response or encounters an error.
 - **In-App Settings UI**: Configure servers, ports, API keys, and multiplexed profiles directly inside the UI without editing files or restarting.
 
 ---
@@ -208,6 +208,28 @@ This verifies:
 ```
 
 For detailed architectural decision records, see [`docs/adr/`](docs/adr/).
+
+---
+
+## 🗑️ Removal
+
+To uninstall the plugin using the Omarchy plugin manager:
+
+```bash
+omarchy plugin remove com.mwhuss.omarchy-hermes-api
+```
+
+### File Lifecycle on Removal
+
+- **Deleted upon removal**:
+  - `~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/` (all plugin code, assets, dependencies, and temporary runtime files are removed).
+- **Persisting files**:
+  - `~/.config/omarchy-hermes-api/settings.json`: The user configuration file (containing configured endpoints, ports, and API keys) is preserved across uninstallations so settings are retained if the plugin is reinstalled or updated. To remove this configuration file manually:
+    ```bash
+    rm -rf ~/.config/omarchy-hermes-api
+    ```
+- **Untouched system files**:
+  - `~/.hermes/`: Any existing Hermes CLI configuration or profile files are only read if present and are never modified or deleted by this plugin.
 
 ---
 

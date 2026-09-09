@@ -11,15 +11,204 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
+const readline = require('readline');
 const { URL } = require('url');
 const { OpenAI } = require('openai');
+
+const MAX_SETTINGS_BYTES = 65536;
+const MAX_ENV_BYTES = 32768;
+const MAX_STREAM_CHARS = 262144;
+const MAX_FETCH_BYTES = 1048576;
+
+function isLoopbackHost(hostname) {
+  return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
+}
+
+function isPrivateOrLoopbackHost(hostname) {
+  if (!hostname || typeof hostname !== 'string') return false;
+  const h = hostname.toLowerCase();
+  if (isLoopbackHost(h)) return true;
+  if (h.endsWith('.ts.net') || h.endsWith('.local')) return true;
+  const ipv4Match = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1).map(Number);
+    if (octets.some(o => o < 0 || o > 255)) return false;
+    if (octets[0] === 10) return true;
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+    if (octets[0] === 192 && octets[1] === 168) return true;
+    if (octets[0] === 169 && octets[1] === 254) return true;
+  }
+  return false;
+}
+
+function sanitizeHeaderValue(val) {
+  return String(val || '').replace(/[\r\n\0]/g, '').trim();
+}
+
+function readBoundedFile(filePath, maxBytes = MAX_SETTINGS_BYTES) {
+  try {
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
+    const fd = fs.openSync(filePath, flags);
+    try {
+      const st = fs.fstatSync(fd);
+      if (!st.isFile()) {
+        return null;
+      }
+      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+        return null;
+      }
+      if ((st.mode & 0o077) !== 0) {
+        try { fs.fchmodSync(fd, 0o600); } catch (e) {}
+      }
+      if (st.size > maxBytes) {
+        return null;
+      }
+      const buf = Buffer.alloc(maxBytes + 1);
+      const bytesRead = fs.readSync(fd, buf, 0, maxBytes + 1, 0);
+      if (bytesRead > maxBytes) {
+        return null;
+      }
+      return buf.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    return null;
+  }
+}
+
+function readStdinLineOrEof(maxBytes = 262144) {
+  return new Promise((resolve) => {
+    let buf = '';
+    const rl = readline.createInterface({ input: process.stdin, terminal: false });
+    let resolved = false;
+    rl.on('line', (line) => {
+      if (!resolved) {
+        resolved = true;
+        rl.close();
+        resolve(line);
+      }
+    });
+    rl.on('close', () => {
+      if (!resolved) {
+        resolved = true;
+        resolve(buf);
+      }
+    });
+    process.stdin.on('data', (chunk) => {
+      if (!resolved) {
+        buf += chunk.toString('utf8');
+        if (buf.length > maxBytes) {
+          resolved = true;
+          rl.close();
+          resolve(buf.slice(0, maxBytes));
+        }
+      }
+    });
+  });
+}
+
+function ensurePrivateDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+  }
+  const st = fs.lstatSync(dirPath);
+  if (!st.isDirectory() || st.isSymbolicLink()) {
+    throw new Error(`Settings directory is not a regular directory: ${dirPath}`);
+  }
+  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+    throw new Error(`Settings directory owned by untrusted UID: ${st.uid}`);
+  }
+  if ((st.mode & 0o077) !== 0) {
+    fs.chmodSync(dirPath, 0o700);
+  }
+}
+
+function writeAtomicSettings(settingsData) {
+  const content = JSON.stringify(settingsData, null, 2) + '\n';
+  const buf = Buffer.from(content, 'utf8');
+  if (buf.length > MAX_SETTINGS_BYTES) {
+    throw new Error('Settings payload exceeds size limit');
+  }
+
+  const settingsPath = getSettingsPath();
+  const dirPath = path.dirname(settingsPath);
+  ensurePrivateDir(dirPath);
+
+  const randSuffix = crypto.randomBytes(8).toString('hex');
+  const tmpPath = path.join(dirPath, `.settings.${randSuffix}.tmp`);
+
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(tmpPath, flags, 0o600);
+  try {
+    try { fs.fchmodSync(fd, 0o600); } catch (e) {}
+    fs.writeSync(fd, buf, 0, buf.length, 0);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+  } catch (err) {
+    try { fs.closeSync(fd); } catch (e) {}
+    try { fs.unlinkSync(tmpPath); } catch (e) {}
+    throw err;
+  }
+
+  try {
+    fs.renameSync(tmpPath, settingsPath);
+    try {
+      const dirFd = fs.openSync(dirPath, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
+      fs.fsyncSync(dirFd);
+      fs.closeSync(dirFd);
+    } catch (e) {}
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch (e) {}
+    throw err;
+  }
+}
+
+async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      redirect: 'manual'
+    });
+    clearTimeout(timer);
+    return res;
+  } catch (err) {
+    clearTimeout(timer);
+    throw err;
+  }
+}
+
+async function readBoundedJson(res, maxBytes = MAX_FETCH_BYTES) {
+  if (!res.body) {
+    return {};
+  }
+  const reader = res.body.getReader();
+  let totalBytes = 0;
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.length;
+    if (totalBytes > maxBytes) {
+      try { await reader.cancel(); } catch (e) {}
+      throw new Error(`Response body exceeded maximum allowed limit of ${maxBytes} bytes`);
+    }
+    chunks.push(value);
+  }
+  const fullBuf = Buffer.concat(chunks);
+  return JSON.parse(fullBuf.toString('utf8'));
+}
 
 function loadHermesEnvFile() {
   const envPath = path.join(os.homedir(), '.hermes', '.env');
   const vars = {};
-  if (fs.existsSync(envPath)) {
+  const content = readBoundedFile(envPath, MAX_ENV_BYTES);
+  if (content) {
     try {
-      const content = fs.readFileSync(envPath, 'utf8');
       content.split('\n').forEach(line => {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#')) return;
@@ -34,7 +223,7 @@ function loadHermesEnvFile() {
         }
       });
     } catch (e) {
-      // Ignore reading errors
+      // Ignore parsing errors
     }
   }
   return vars;
@@ -46,15 +235,15 @@ function getSettingsPath() {
 
 function loadSettingsFile() {
   const settingsPath = getSettingsPath();
-  if (fs.existsSync(settingsPath)) {
+  const content = readBoundedFile(settingsPath, MAX_SETTINGS_BYTES);
+  if (content) {
     try {
-      const content = fs.readFileSync(settingsPath, 'utf8');
       const parsed = JSON.parse(content);
       if (parsed && Array.isArray(parsed.endpoints)) {
         return parsed;
       }
     } catch (e) {
-      // Ignore reading / parsing errors
+      // Ignore parsing errors
     }
   }
   return null;
@@ -63,40 +252,40 @@ function loadSettingsFile() {
 function discoverLocalHermesProfiles() {
   const profilesDir = path.join(os.homedir(), '.hermes', 'profiles');
   const discovered = [];
-  if (fs.existsSync(profilesDir)) {
-    try {
-      const entries = fs.readdirSync(profilesDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const profName = entry.name;
-          if (profName.toLowerCase() === 'default') continue;
-          let apiKey = '';
-          const envPath = path.join(profilesDir, profName, '.env');
-          if (fs.existsSync(envPath)) {
-            try {
-              const content = fs.readFileSync(envPath, 'utf8');
-              content.split('\n').forEach(line => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#')) return;
-                const eqIdx = trimmed.indexOf('=');
-                if (eqIdx !== -1) {
-                  const k = trimmed.slice(0, eqIdx).trim();
-                  let v = trimmed.slice(eqIdx + 1).trim();
-                  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-                    v = v.slice(1, -1);
-                  }
-                  if (k === 'API_SERVER_KEY') {
-                    apiKey = v;
-                  }
+  try {
+    if (!fs.existsSync(profilesDir)) return discovered;
+    const entries = fs.readdirSync(profilesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const profName = entry.name;
+        if (!/^[A-Za-z0-9._-]+$/.test(profName) || profName === '.' || profName === '..') continue;
+        if (profName.toLowerCase() === 'default') continue;
+        let apiKey = '';
+        const envPath = path.join(profilesDir, profName, '.env');
+        const content = readBoundedFile(envPath, MAX_ENV_BYTES);
+        if (content) {
+          try {
+            content.split('\n').forEach(line => {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed.startsWith('#')) return;
+              const eqIdx = trimmed.indexOf('=');
+              if (eqIdx !== -1) {
+                const k = trimmed.slice(0, eqIdx).trim();
+                let v = trimmed.slice(eqIdx + 1).trim();
+                if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+                  v = v.slice(1, -1);
                 }
-              });
-            } catch (e) {}
-          }
-          discovered.push({ name: profName, apiKey });
+                if (k === 'API_SERVER_KEY') {
+                  apiKey = v;
+                }
+              }
+            });
+          } catch (e) {}
         }
+        discovered.push({ name: profName, apiKey });
       }
-    } catch (e) {}
-  }
+    }
+  } catch (e) {}
   return discovered;
 }
 
@@ -200,7 +389,8 @@ function resolveConfig(targetEndpointId, targetProfileName) {
   const endpointId = targetEndpoint ? targetEndpoint.id : 'endpoint-default';
   const endpointName = (targetEndpoint && targetEndpoint.name) || process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
   const rootUrl = parsedUrl.origin;
-  const endpointApiKey = (targetEndpoint && targetEndpoint.apiKey) || process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || 'dummy-key';
+  const rawKey = (targetEndpoint && targetEndpoint.apiKey) || process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
+  const endpointApiKey = sanitizeHeaderValue(rawKey);
 
   // Check profile
   let resolvedProfile = targetProfileName;
@@ -214,6 +404,9 @@ function resolveConfig(targetEndpointId, targetProfileName) {
   const isDefaultProfile = !resolvedProfile || resolvedProfile.toLowerCase() === 'default';
 
   if (isDefaultProfile) {
+    if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname) && endpointApiKey) {
+      throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
+    }
     return {
       endpointId,
       endpointName,
@@ -235,17 +428,20 @@ function resolveConfig(targetEndpointId, targetProfileName) {
         return n && n.toLowerCase() === resolvedProfile.toLowerCase();
       });
       if (found && typeof found === 'object' && found.apiKey) {
-        profApiKey = found.apiKey;
+        profApiKey = sanitizeHeaderValue(found.apiKey);
       }
     }
-    const isLocal = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
+    const isLocal = isLoopbackHost(parsedUrl.hostname);
     if (!profApiKey && isLocal) {
       const discovered = discoverLocalHermesProfiles();
       const d = discovered.find(p => p.name.toLowerCase() === resolvedProfile.toLowerCase());
-      if (d && d.apiKey) profApiKey = d.apiKey;
+      if (d && d.apiKey) profApiKey = sanitizeHeaderValue(d.apiKey);
     }
 
     const finalApiKey = profApiKey || endpointApiKey;
+    if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname) && finalApiKey) {
+      throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
+    }
     const encProf = encodeURIComponent(resolvedProfile);
 
     return {
@@ -264,17 +460,26 @@ function resolveConfig(targetEndpointId, targetProfileName) {
 }
 
 async function handleStatus(targetEndpointId, targetProfileName) {
-  const cfg = resolveConfig(targetEndpointId, targetProfileName);
+  let cfg;
   try {
-    const res = await fetch(`${cfg.baseUrl}/models`, {
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
+    cfg = resolveConfig(targetEndpointId, targetProfileName);
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      connected: false,
+      error: err.message
+    }));
+    return;
+  }
+  try {
+    const headers = { 'Accept': 'application/json' };
+    if (cfg.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    }
+    const res = await boundedFetch(`${cfg.baseUrl}/models`, { headers }, 65536, 10000);
 
     if (res.ok) {
-      const data = await res.json();
+      const data = await readBoundedJson(res, 65536);
       const models = Array.isArray(data.data) ? data.data.map(m => m.id) : ['hermes-agent'];
       console.log(JSON.stringify({
         success: true,
@@ -313,28 +518,22 @@ async function handleStatus(targetEndpointId, targetProfileName) {
 
 async function fetchSessionsForConfig(cfg) {
   try {
-    let res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions`, {
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
+    const headers = { 'Accept': 'application/json' };
+    if (cfg.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    }
+    let res = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions`, { headers }, 1048576, 10000);
 
     if (!res.ok) {
-      res = await fetch(`${cfg.baseUrl}/sessions`, {
-        headers: {
-          'Authorization': `Bearer ${cfg.apiKey}`,
-          'Accept': 'application/json'
-        }
-      });
+      res = await boundedFetch(`${cfg.baseUrl}/sessions`, { headers }, 1048576, 10000);
     }
 
     if (!res.ok) return [];
 
-    const raw = await res.json();
+    const raw = await readBoundedJson(res, 1048576);
     const list = Array.isArray(raw) ? raw : (Array.isArray(raw.sessions) ? raw.sessions : (Array.isArray(raw.data) ? raw.data : []));
 
-    return list.map((s, idx) => {
+    return list.slice(0, 500).map((s, idx) => {
       let createdAt = s.created_at || s.createdAt || s.started_at;
       if (typeof createdAt === 'number') {
         createdAt = new Date(createdAt * 1000).toISOString();
@@ -349,7 +548,7 @@ async function fetchSessionsForConfig(cfg) {
         updatedAt = createdAt;
       }
 
-      const rawId = s.id || s.session_id || `session-${idx}`;
+      const rawId = String(s.id || s.session_id || `session-${idx}`).slice(0, 128);
       const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawId}`;
 
       return {
@@ -359,11 +558,11 @@ async function fetchSessionsForConfig(cfg) {
         endpoint_name: cfg.endpointName,
         profile_name: cfg.profileName,
         target_id: `${cfg.endpointId}:${cfg.profileName}`,
-        title: s.title || s.preview || s.name || `Session ${rawId}`,
+        title: String(s.title || s.preview || s.name || `Session ${rawId}`).slice(0, 200),
         created_at: createdAt,
         updated_at: updatedAt,
         source: s.source || s.platform || 'hermes',
-        message_count: s.message_count || s.messages?.length || 0,
+        message_count: typeof s.message_count === 'number' ? s.message_count : (s.messages?.length || 0),
         model: s.model || 'hermes-agent'
       };
     });
@@ -484,61 +683,51 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
     return;
   }
 
-  const cfg = resolveConfig(endpointId, profileName);
+  let cfg;
+  try {
+    cfg = resolveConfig(endpointId, profileName);
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
+    return;
+  }
   try {
     let sessionObj = {};
-    let sessionRes = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
+    const headers = { 'Accept': 'application/json' };
+    if (cfg.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    }
+    let sessionRes = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, { headers }, 1048576, 10000);
 
     if (sessionRes.ok) {
-      const data = await sessionRes.json();
+      const data = await readBoundedJson(sessionRes, 1048576);
       sessionObj = data.session || data || {};
     } else {
-      sessionRes = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
-        headers: {
-          'Authorization': `Bearer ${cfg.apiKey}`,
-          'Accept': 'application/json'
-        }
-      });
+      sessionRes = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, { headers }, 1048576, 10000);
       if (sessionRes.ok) {
-        const data = await sessionRes.json();
+        const data = await readBoundedJson(sessionRes, 1048576);
         sessionObj = data.session || data || {};
       }
     }
 
     // 2. Fetch session messages
-    let msgRes = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}/messages`, {
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
+    let msgRes = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}/messages`, { headers }, 1048576, 10000);
 
     if (!msgRes.ok) {
-      msgRes = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}/messages`, {
-        headers: {
-          'Authorization': `Bearer ${cfg.apiKey}`,
-          'Accept': 'application/json'
-        }
-      });
+      msgRes = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}/messages`, { headers }, 1048576, 10000);
     }
 
     let rawMessages = [];
     if (msgRes.ok) {
-      const msgData = await msgRes.json();
+      const msgData = await readBoundedJson(msgRes, 1048576);
       rawMessages = Array.isArray(msgData.data) ? msgData.data : (Array.isArray(msgData.messages) ? msgData.messages : (Array.isArray(msgData) ? msgData : []));
     } else {
       rawMessages = sessionObj.messages || [];
     }
 
-    const messages = rawMessages.filter(Boolean).map(m => {
+    const messages = rawMessages.slice(0, 1000).filter(Boolean).map(m => {
       let parsedToolCalls = [];
       if (Array.isArray(m.tool_calls)) {
-        parsedToolCalls = m.tool_calls.map(tc => {
+        parsedToolCalls = m.tool_calls.slice(0, 50).map(tc => {
           let fnName = tc?.function?.name || tc?.name || 'tool';
           let fnArgs = tc?.function?.arguments || tc?.arguments || '';
           let summary = '';
@@ -619,24 +808,28 @@ async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
     return;
   }
 
-  const cfg = resolveConfig(endpointId, profileName);
+  let cfg;
   try {
-    let res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
+    cfg = resolveConfig(endpointId, profileName);
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
+    return;
+  }
+  try {
+    const headers = { 'Accept': 'application/json' };
+    if (cfg.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    }
+    let res = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       method: 'DELETE',
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Accept': 'application/json'
-      }
-    });
+      headers
+    }, 65536, 10000);
 
     if (!res.ok && res.status !== 404) {
-      res = await fetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
+      res = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
         method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${cfg.apiKey}`,
-          'Accept': 'application/json'
-        }
-      });
+        headers
+      }, 65536, 10000);
     }
 
     const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
@@ -662,22 +855,36 @@ function sendDesktopNotification(title, message, isError = false, appName = 'Her
   cleanMsg = cleanMsg.replace(/```[\s\S]*?```/g, '[Code]');
   cleanMsg = cleanMsg.replace(/`([^`]+)`/g, '$1');
   cleanMsg = cleanMsg.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-  cleanMsg = cleanMsg.replace(/[*_~>#]/g, '');
+  cleanMsg = cleanMsg.replace(/[*_~#]/g, '');
+  cleanMsg = cleanMsg.replace(/[<>&]/g, '');
+  cleanMsg = cleanMsg.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
   cleanMsg = cleanMsg.replace(/\s+/g, ' ').trim();
   if (cleanMsg.length > 140) cleanMsg = cleanMsg.slice(0, 137) + '...';
   if (!cleanMsg) cleanMsg = isError ? 'An error occurred.' : 'Response completed.';
 
-  const urgency = isError ? 'critical' : 'normal';
-  const glyph = isError ? '\u{f015a}' : '\u{f06d3}';
+  let cleanTitle = String(title || appName || 'Hermes').replace(/[<>&]/g, '');
+  cleanTitle = cleanTitle.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+  if (cleanTitle.length > 60) cleanTitle = cleanTitle.slice(0, 57) + '...';
 
-  const script = 'if command -v omarchy-notification-send >/dev/null 2>&1; then ' +
-    '  omarchy-notification-send --app-name "$1" -u "$2" -g "$3" "$4" "$5"; ' +
-    'else ' +
-    '  notify-send -a "$1" -u "$2" "$4" "$5"; ' +
-    'fi';
+  const urgency = isError ? 'critical' : 'normal';
+
+  let bin = '/usr/bin/notify-send';
+  if (fs.existsSync('/usr/share/omarchy/bin/omarchy-notification-send')) {
+    bin = '/usr/share/omarchy/bin/omarchy-notification-send';
+  } else if (fs.existsSync('/usr/bin/omarchy-notification-send')) {
+    bin = '/usr/bin/omarchy-notification-send';
+  }
+
+  let args = [];
+  if (bin.includes('omarchy-notification-send')) {
+    const glyph = isError ? '\u{f015a}' : '\u{f06d3}';
+    args = ['--app-name', appName || 'Hermes', '-u', urgency, '-g', glyph, '--', cleanTitle, cleanMsg];
+  } else {
+    args = ['-a', appName || 'Hermes', '-u', urgency, '--', cleanTitle, cleanMsg];
+  }
 
   try {
-    const child = spawn('bash', ['-lc', script, 'bash', appName || 'Hermes', urgency, glyph, title, cleanMsg], {
+    const child = spawn(bin, args, {
       detached: true,
       stdio: 'ignore'
     });
@@ -747,6 +954,7 @@ async function handleStreamChat(options) {
     const openaiClient = new OpenAI({
       baseURL: cfg.baseUrl,
       apiKey: cfg.apiKey,
+      timeout: 60000,
     });
 
     const stream = await openaiClient.chat.completions.create(
@@ -769,14 +977,16 @@ async function handleStreamChat(options) {
       const delta = choice?.delta || chunk.delta;
 
       if (delta && delta.content) {
-        fullText += delta.content;
-        process.stdout.write(JSON.stringify({
-          type: 'delta',
-          session_id: emitSessionId,
-          raw_session_id: resolvedSessionId,
-          composite_id: compositeId,
-          content: delta.content
-        }) + '\n');
+        if (fullText.length < MAX_STREAM_CHARS) {
+          fullText += delta.content;
+          process.stdout.write(JSON.stringify({
+            type: 'delta',
+            session_id: emitSessionId,
+            raw_session_id: resolvedSessionId,
+            composite_id: compositeId,
+            content: delta.content
+          }) + '\n');
+        }
       }
 
       if (delta && delta.tool_calls && Array.isArray(delta.tool_calls)) {
@@ -855,25 +1065,33 @@ async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile)
     return;
   }
 
-  const cfg = resolveConfig(endpointId, profileName);
+  let cfg;
   try {
-    const res = await fetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
+    cfg = resolveConfig(endpointId, profileName);
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
+    return;
+  }
+  try {
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    };
+    if (cfg.apiKey) {
+      headers['Authorization'] = `Bearer ${cfg.apiKey}`;
+    }
+    const res = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${cfg.apiKey}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({ title: newTitle })
-    });
+      headers,
+      body: JSON.stringify({ title: String(newTitle).slice(0, 200) })
+    }, 65536, 10000);
 
     if (!res.ok) {
-      const errText = await res.text();
-      console.log(JSON.stringify({ success: false, error: `Failed to rename session: ${res.status} ${errText}` }));
+      console.log(JSON.stringify({ success: false, error: `Failed to rename session: ${res.status}` }));
       return;
     }
 
-    const data = await res.json();
+    const data = await readBoundedJson(res, 65536);
     const sessionObj = data.session || data;
     const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
@@ -936,24 +1154,21 @@ async function handleListTargets() {
       parsedUrl.port = String(ep.port);
     }
     const rootUrl = parsedUrl.origin;
-    const isLocal = parsedUrl.hostname === '127.0.0.1' || parsedUrl.hostname === 'localhost';
+    const isLocal = isLoopbackHost(parsedUrl.hostname);
 
     let connected = false;
     let models = ['hermes-agent'];
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2500);
-      const res = await fetch(`${rootUrl}/v1/models`, {
-        headers: {
-          'Authorization': `Bearer ${ep.apiKey || ''}`,
-          'Accept': 'application/json'
-        },
-        signal: controller.signal
-      });
-      clearTimeout(timeout);
+      const headers = { 'Accept': 'application/json' };
+      if (ep.apiKey) {
+        if (parsedUrl.protocol === 'https:' || isPrivateOrLoopbackHost(parsedUrl.hostname)) {
+          headers['Authorization'] = `Bearer ${sanitizeHeaderValue(ep.apiKey)}`;
+        }
+      }
+      const res = await boundedFetch(`${rootUrl}/v1/models`, { headers }, 65536, 2500);
       if (res.ok) {
         connected = true;
-        const data = await res.json();
+        const data = await readBoundedJson(res, 65536);
         if (Array.isArray(data.data) && data.data.length > 0) {
           models = data.data.map(m => m.id);
         }
@@ -1029,7 +1244,6 @@ async function handleListTargets() {
 }
 
 async function handleSetActiveTarget(endpointId, profileName) {
-  const settingsPath = getSettingsPath();
   let settings = loadSettingsFile() || { endpoints: [] };
   settings.activeTarget = {
     endpointId: endpointId || 'all',
@@ -1037,15 +1251,7 @@ async function handleSetActiveTarget(endpointId, profileName) {
   };
 
   try {
-    const configDir = path.dirname(settingsPath);
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    }
-    const tmpPath = path.join(configDir, `settings.json.tmp.${process.pid}.${Date.now()}`);
-    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync(tmpPath, 0o600);
-    fs.renameSync(tmpPath, settingsPath);
-    fs.chmodSync(settingsPath, 0o600);
+    writeAtomicSettings(settings);
 
     console.log(JSON.stringify({
       success: true,
@@ -1061,9 +1267,9 @@ async function handleSetActiveTarget(endpointId, profileName) {
 
 async function handleGetSettings() {
   const settingsPath = getSettingsPath();
-  if (fs.existsSync(settingsPath)) {
+  const content = readBoundedFile(settingsPath, MAX_SETTINGS_BYTES);
+  if (content) {
     try {
-      const content = fs.readFileSync(settingsPath, 'utf8');
       const data = JSON.parse(content);
       if (data && Array.isArray(data.endpoints)) {
         // Strip any legacy 'default' profiles; default profile is purely ornamental in UI
@@ -1131,7 +1337,7 @@ async function handleSaveSettings(rawInput) {
   let jsonString = rawInput;
   if (!jsonString || jsonString === '--stdin') {
     try {
-      jsonString = fs.readFileSync(0, 'utf8');
+      jsonString = await readStdinLineOrEof(MAX_SETTINGS_BYTES);
     } catch (e) {
       // stdin read failed
     }
@@ -1216,6 +1422,14 @@ async function handleSaveSettings(rawInput) {
       return;
     }
 
+    if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname)) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" must use HTTPS for remote hosts (HTTP is only permitted for loopback or private networks)`
+      }));
+      return;
+    }
+
     const cleanUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}`;
 
     let port = ep.port !== undefined && ep.port !== null ? parseInt(ep.port, 10) : 8642;
@@ -1235,7 +1449,7 @@ async function handleSaveSettings(rawInput) {
       ? ep.id.trim()
       : `endpoint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-    const apiKey = typeof ep.apiKey === 'string' ? ep.apiKey.trim() : '';
+    const apiKey = typeof ep.apiKey === 'string' ? sanitizeHeaderValue(ep.apiKey) : '';
 
     // Only custom profiles are saved; the default profile is ornamental in the UI and never persisted
     const profiles = [];
@@ -1248,7 +1462,7 @@ async function handleSaveSettings(rawInput) {
           profName = prof.trim();
         } else if (prof && typeof prof === 'object') {
           profName = typeof prof.name === 'string' ? prof.name.trim() : '';
-          profKey = typeof prof.apiKey === 'string' ? prof.apiKey.trim() : '';
+          profKey = typeof prof.apiKey === 'string' ? sanitizeHeaderValue(prof.apiKey) : '';
         }
 
         // Never save "default" profile - it represents the built-in endpoint agent
@@ -1291,17 +1505,7 @@ async function handleSaveSettings(rawInput) {
   };
 
   try {
-    const settingsPath = getSettingsPath();
-    const configDir = path.dirname(settingsPath);
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-    }
-
-    const tmpPath = path.join(configDir, `settings.json.tmp.${process.pid}.${Date.now()}`);
-    fs.writeFileSync(tmpPath, JSON.stringify(cleanSettings, null, 2) + '\n', { mode: 0o600 });
-    fs.chmodSync(tmpPath, 0o600);
-    fs.renameSync(tmpPath, settingsPath);
-    fs.chmodSync(settingsPath, 0o600);
+    writeAtomicSettings(cleanSettings);
 
     console.log(JSON.stringify({
       success: true,
@@ -1411,15 +1615,17 @@ async function main() {
             history = [];
           }
         } else if (rest[i] === '--json-input') {
-          const stdinData = fs.readFileSync(0, 'utf-8');
           try {
+            const stdinData = await readStdinLineOrEof(262144);
             const parsed = JSON.parse(stdinData);
             sessionId = parsed.sessionId || sessionId;
             prompt = parsed.prompt || prompt;
             systemPrompt = parsed.systemPrompt || parsed.system || systemPrompt;
             model = parsed.model || model;
             history = parsed.history || history;
-            notify = parsed.notify || notify;
+            notify = parsed.notify !== undefined ? parsed.notify : notify;
+            if (parsed.endpoint) endpoint = parsed.endpoint;
+            if (parsed.profile) profile = parsed.profile;
           } catch (e) {
             // ignore
           }
