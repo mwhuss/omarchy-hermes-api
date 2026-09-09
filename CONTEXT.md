@@ -37,7 +37,7 @@ The sidebar navigation area presenting selectable Hermes Sessions with their sta
 _Avoid_: Session drawer, thread list, history sidebar
 
 **Server Name**:
-The configured display identity for the Hermes Agent instance (defaulting to "Hermes"), resolved via `HERMES_API_SERVER_NAME` in the environment or `~/.hermes/.env`. Displayed across the flyout header, status bar tooltip, conversational greetings, and desktop notifications.
+The configured display identity for the Hermes Agent instance (defaulting to "Hermes"), resolved via `HERMES_API_SERVER_NAME` in the environment or `~/.hermes/.env`. Displayed across the flyout header, conversational greetings, and desktop notifications.
 _Avoid_: Agent title, bot alias, profile tag
 
 **In-Flight Session Stream**:

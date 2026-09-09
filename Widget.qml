@@ -1655,13 +1655,84 @@ Panel {
     }
   }
 
+  function getBarTooltipText() {
+    if (!root.isConnected) {
+      return "Hermes Agent • Offline (Server unreachable)"
+    }
+
+    var lines = []
+
+    if (root.activeStreamCount > 1) {
+      lines.push("Hermes Agent • " + root.activeStreamCount + " sessions generating in background")
+    } else if (root.isStreaming) {
+      var activeId = (root.selectedSessionId && root.activeStreams[root.selectedSessionId])
+        ? root.selectedSessionId
+        : (root.activeStreams ? Object.keys(root.activeStreams)[0] : "")
+      var stream = (activeId && root.activeStreams) ? root.activeStreams[activeId] : null
+
+      var activeTool = null
+      var tools = (activeId === root.selectedSessionId && root.currentToolEvents && root.currentToolEvents.length > 0)
+        ? root.currentToolEvents
+        : (stream && stream.toolEvents ? stream.toolEvents : [])
+
+      if (tools && tools.length > 0) {
+        for (var t = tools.length - 1; t >= 0; t--) {
+          var te = tools[t]
+          if (te && (te.status === "running" || !te.status)) {
+            activeTool = te
+            break
+          }
+        }
+        if (!activeTool) {
+          activeTool = tools[tools.length - 1]
+        }
+      }
+
+      if (activeTool) {
+        var tName = String(activeTool.tool || "tool").trim()
+        var tLabel = String(activeTool.label || "").replace(/\s+/g, " ").trim()
+        if (tLabel.length > 35) tLabel = tLabel.slice(0, 32) + "..."
+        lines.push("Hermes Agent • Running " + tName + (tLabel ? (": " + tLabel) : ""))
+      } else {
+        lines.push("Hermes Agent • Generating response...")
+      }
+
+      var sTitle = ""
+      if (activeId && root.sessionCache && root.sessionCache[activeId] && root.sessionCache[activeId].title) {
+        sTitle = root.sessionCache[activeId].title
+      } else if (activeId === root.selectedSessionId && root.activeSessionTitle) {
+        sTitle = root.activeSessionTitle
+      }
+      if (sTitle && sTitle !== "New Session") {
+        var cleanSTitle = String(sTitle).replace(/\s+/g, " ").trim()
+        if (cleanSTitle.length > 36) cleanSTitle = cleanSTitle.slice(0, 33) + "..."
+        lines.push("Session: \"" + cleanSTitle + "\"")
+      }
+    } else {
+      lines.push("Hermes Agent • Ready")
+      var recentTitle = ""
+      if (root.activeSessionTitle) {
+        recentTitle = root.activeSessionTitle
+      } else if (root.sessions && root.sessions.length > 0 && root.sessions[0].title) {
+        recentTitle = root.sessions[0].title
+      }
+      if (recentTitle && recentTitle !== "New Session") {
+        var cleanRecent = String(recentTitle).replace(/\s+/g, " ").trim()
+        if (cleanRecent.length > 36) cleanRecent = cleanRecent.slice(0, 33) + "..."
+        lines.push("Last active: \"" + cleanRecent + "\"")
+      }
+    }
+
+    return lines.join("\n")
+  }
+
   // ------------------------------------------------------------- Bar Button
 
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
-    tooltipText: root.isConnected ? (root.serverName + " (Live)") : (root.serverName + " (Offline)")
+    tooltipText: root.getBarTooltipText()
 
     iconComponent: Component {
       Item {
