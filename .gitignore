@@ -3,3 +3,4 @@ npm-debug.log*
 .DS_Store
 .scratch/
 *.log
+readme-preview.html

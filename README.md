@@ -11,11 +11,8 @@ Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweigh
 ## 🚀 Quick Start
 
 ```bash
-# 1. Add the plugin to Omarchy Shell
+# Add and enable the plugin in Omarchy Shell (zero extra dependencies required)
 omarchy plugin add https://github.com/mwhuss/omarchy-hermes-api.git --enable
-
-# 2. Install bridge dependencies
-cd ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api && npm ci --omit=dev
 ```
 
 Configure endpoints and multiplexed agent profiles directly in the flyout settings menu (gear icon ⚙️) or via `~/.config/omarchy-hermes-api/settings.json`.
@@ -121,12 +118,11 @@ If `settings.json` does not exist on initial startup, the plugin automatically s
    cd omarchy-hermes-api
    ```
 
-2. **Install dependencies and register plugin:**
+2. **Register plugin (symlink):**
    ```bash
-   npm install
-   npm run install-plugin
+   bash bin/install.sh
    ```
-   *(This installs pinned dependencies and symlinks the plugin to `~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api`.)*
+   *(This verifies Node.js 18+ and symlinks the plugin to `~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api`.)*
 
 3. **Enable the plugin in Omarchy Shell:**
    Add `"com.mwhuss.omarchy-hermes-api"` to your bar layout in `~/.config/omarchy/shell.json`:
@@ -148,20 +144,6 @@ If `settings.json` does not exist on initial startup, the plugin automatically s
    ```bash
    omarchy-restart-shell
    ```
-
----
-
-## 🗑️ Removal
-
-To disable or completely remove the plugin:
-
-```bash
-# Temporarily disable the widget
-omarchy plugin disable com.mwhuss.omarchy-hermes-api
-
-# Completely remove the plugin and its files
-omarchy plugin remove com.mwhuss.omarchy-hermes-api
-```
 
 ---
 

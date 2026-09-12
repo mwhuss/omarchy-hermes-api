@@ -9,10 +9,16 @@ echo "==> Setting up Omarchy Hermes Menu Bar Plugin"
 echo "Source: $SRC_DIR"
 echo "Target: $TARGET_DIR"
 
-# Ensure dependencies are installed from pinned lockfile
-if [ ! -d "$SRC_DIR/node_modules" ]; then
-  echo "==> Installing npm dependencies from lockfile..."
-  (cd "$SRC_DIR" && npm ci --omit=dev)
+# Ensure Node.js 18+ is available
+if ! command -v node >/dev/null 2>&1; then
+  echo "Error: Node.js (>=18.0.0) is required but not found in PATH." >&2
+  exit 1
+fi
+
+NODE_MAJOR=$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')
+if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -lt 18 ]; then
+  echo "Error: Node.js version 18 or higher is required (found $(node -v))." >&2
+  exit 1
 fi
 
 mkdir -p "$HOME/.config/omarchy/plugins"
