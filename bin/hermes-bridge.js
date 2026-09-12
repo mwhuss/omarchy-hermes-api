@@ -1525,10 +1525,18 @@ function parseCliOptions(args) {
   const rest = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    if (arg === '--') {
+      rest.push(...args.slice(i + 1));
+      break;
+    }
     if ((arg === '--endpoint' || arg === '-e') && i + 1 < args.length) {
       endpoint = args[++i];
     } else if ((arg === '--profile' || arg === '-p') && i + 1 < args.length) {
       profile = args[++i];
+    } else if (arg.startsWith('--endpoint=')) {
+      endpoint = arg.slice(11);
+    } else if (arg.startsWith('--profile=')) {
+      profile = arg.slice(10);
     } else {
       rest.push(arg);
     }
@@ -1645,8 +1653,14 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(JSON.stringify({ success: false, error: err.message }));
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error(JSON.stringify({ success: false, error: err.message }));
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parseCliOptions
+};
 

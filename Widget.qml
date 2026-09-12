@@ -402,10 +402,11 @@ Panel {
       if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
         getSessionProc.buf = ""
         getSessionProc.errBuf = ""
-        var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", root.selectedSessionId]
+        var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
         var selTarget = root.getSessionTarget(root.selectedSessionId)
         if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
         if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
+        getArgs.push("--", root.selectedSessionId)
         getSessionProc.command = getArgs
         getSessionProc.running = true
       }
@@ -646,10 +647,11 @@ Panel {
     }
     getSessionProc.buf = ""
     getSessionProc.errBuf = ""
-    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", sessionId]
+    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
     var selTarget = root.getSessionTarget(sessionId)
     if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
     if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
+    getArgs.push("--", sessionId)
     getSessionProc.command = getArgs
     getSessionProc.running = true
 
@@ -726,10 +728,11 @@ Panel {
 
     renameSessionProc.buf = ""
     renameSessionProc.errBuf = ""
-    var renArgs = ["/usr/bin/node", "--", root.scriptPath, "rename-session", "--", selectedSessionId, trimmed]
+    var renArgs = ["/usr/bin/node", "--", root.scriptPath, "rename-session"]
     var renTarget = root.getSessionTarget(selectedSessionId)
     if (renTarget.endpointId) renArgs.push("--endpoint", renTarget.endpointId)
     if (renTarget.profileName) renArgs.push("--profile", renTarget.profileName)
+    renArgs.push("--", selectedSessionId, trimmed)
     renameSessionProc.command = renArgs
     renameSessionProc.running = true
   }
@@ -799,10 +802,11 @@ Panel {
     }
     deleteSessionProc.buf = ""
     deleteSessionProc.errBuf = ""
-    var delArgs = ["/usr/bin/node", "--", root.scriptPath, "delete-session", "--", sessionId]
+    var delArgs = ["/usr/bin/node", "--", root.scriptPath, "delete-session"]
     var delTarget = root.getSessionTarget(sessionId)
     if (delTarget.endpointId) delArgs.push("--endpoint", delTarget.endpointId)
     if (delTarget.profileName) delArgs.push("--profile", delTarget.profileName)
+    delArgs.push("--", sessionId)
     deleteSessionProc.command = delArgs
     deleteSessionProc.running = true
   }

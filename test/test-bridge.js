@@ -103,6 +103,13 @@ async function testGetSession() {
     assert(json.session, 'json.session must exist');
     assert(Array.isArray(json.session.messages), 'json.session.messages must be an array');
     console.log(`  ✔ get-session passed for ${targetId} (${json.session.messages.length} messages loaded)`);
+
+    const resDelimiter = await runBridge(['get-session', '--', targetId]);
+    assert.strictEqual(resDelimiter.code, 0, `Exit code should be 0, got ${resDelimiter.code}`);
+    const jsonDelimiter = JSON.parse(resDelimiter.stdout);
+    assert.strictEqual(jsonDelimiter.success, true, 'jsonDelimiter.success should be true');
+    assert.strictEqual(jsonDelimiter.id, targetId, 'Session ID should match');
+    console.log(`  ✔ get-session passed with '--' option delimiter`);
   } else {
     console.log('  ⚠ get-session skipped (no sessions available)');
   }
@@ -354,12 +361,45 @@ async function testListTargetsAndActiveTarget() {
   console.log('  ✔ set-active-target passed');
 }
 
+function testCliOptionsParser() {
+  console.log('Testing: CLI options parser (parseCliOptions)...');
+  const { parseCliOptions } = require(bridgePath);
+  assert.strictEqual(typeof parseCliOptions, 'function', 'parseCliOptions must be exported');
+
+  // 1. Basic command
+  let r = parseCliOptions(['status']);
+  assert.deepStrictEqual(r, { endpoint: null, profile: null, rest: ['status'] });
+
+  // 2. Command with -- delimiter
+  r = parseCliOptions(['get-session', '--', 'my-session-id']);
+  assert.deepStrictEqual(r, { endpoint: null, profile: null, rest: ['get-session', 'my-session-id'] });
+
+  // 3. Flags before -- delimiter
+  r = parseCliOptions(['rename-session', '--endpoint', 'ep1', '--profile', 'prof1', '--', 'my-session-id', 'New Title']);
+  assert.deepStrictEqual(r, { endpoint: 'ep1', profile: 'prof1', rest: ['rename-session', 'my-session-id', 'New Title'] });
+
+  // 4. Short flags (-e, -p)
+  r = parseCliOptions(['-e', 'ep2', '-p', 'prof2', 'delete-session', '--', 'my-session-id']);
+  assert.deepStrictEqual(r, { endpoint: 'ep2', profile: 'prof2', rest: ['delete-session', 'my-session-id'] });
+
+  // 5. Flags with = syntax (--endpoint=..., --profile=...)
+  r = parseCliOptions(['--endpoint=ep3', '--profile=prof3', 'get-session', '--', 'my-session-id']);
+  assert.deepStrictEqual(r, { endpoint: 'ep3', profile: 'prof3', rest: ['get-session', 'my-session-id'] });
+
+  // 6. Options after -- are treated as positional, not flags
+  r = parseCliOptions(['rename-session', '--', '--session-that-looks-like-a-flag', '--endpoint']);
+  assert.deepStrictEqual(r, { endpoint: null, profile: null, rest: ['rename-session', '--session-that-looks-like-a-flag', '--endpoint'] });
+
+  console.log('  ✔ CLI options parser verified across all edge cases');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
   console.log('====================================\n');
 
   try {
+    testCliOptionsParser();
     await testManifest();
     await testSettings();
     await testMonograms();
