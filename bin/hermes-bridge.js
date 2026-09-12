@@ -4,9 +4,15 @@
  * Omarchy Hermes API Bridge
  * 
  * Subprocess bridge connecting Quickshell QML to the Hermes Agent API server.
- * Uses official 'openai' package for streaming and OpenAI-compatible endpoints,
- * and fetch for Hermes custom session management endpoints.
+ * Uses native fetch and SSE streaming for OpenAI-compatible and Hermes endpoints.
  */
+
+// Defensive Node runtime version check (Node 18+ required for native fetch)
+const [nodeMajor] = process.versions.node.split('.').map(Number);
+if (nodeMajor < 18) {
+  process.stderr.write(`Error: Node.js 18.0.0 or higher is required (current: ${process.version})\n`);
+  process.exit(1);
+}
 
 const fs = require('fs');
 const path = require('path');
@@ -14,7 +20,6 @@ const os = require('os');
 const crypto = require('crypto');
 const readline = require('readline');
 const { URL } = require('url');
-const { OpenAI } = require('openai');
 
 const MAX_SETTINGS_BYTES = 65536;
 const MAX_ENV_BYTES = 32768;
@@ -951,80 +956,183 @@ async function handleStreamChat(options) {
       model: model || 'hermes-agent'
     }) + '\n');
 
-    const openaiClient = new OpenAI({
-      baseURL: cfg.baseUrl,
-      apiKey: cfg.apiKey,
-      timeout: 60000,
+    const controller = new AbortController();
+    const IDLE_TIMEOUT_MS = 60000;
+    let idleTimer = setTimeout(() => {
+      controller.abort(new Error('Stream request timed out due to 60s inactivity'));
+    }, IDLE_TIMEOUT_MS);
+
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        controller.abort(new Error('Stream request timed out due to 60s inactivity'));
+      }, IDLE_TIMEOUT_MS);
+    };
+
+    const endpointUrl = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${cfg.apiKey}`,
+      'Accept': 'text/event-stream',
+      ...customHeaders
+    };
+
+    const reqBody = JSON.stringify({
+      model: model || 'hermes-agent',
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      stream: true
     });
 
-    const stream = await openaiClient.chat.completions.create(
-      {
-        model: model || 'hermes-agent',
-        messages: messages.map(m => ({ role: m.role, content: m.content })),
-        stream: true,
-      },
-      {
-        headers: customHeaders
+    let res;
+    try {
+      res = await fetch(endpointUrl, {
+        method: 'POST',
+        headers,
+        body: reqBody,
+        signal: controller.signal,
+        redirect: 'manual'
+      });
+    } catch (fetchErr) {
+      clearTimeout(idleTimer);
+      throw fetchErr;
+    }
+
+    if (!res.ok) {
+      clearTimeout(idleTimer);
+      let errDetail = '';
+      try {
+        const errJson = await readBoundedJson(res, 32768);
+        errDetail = errJson.error?.message || errJson.message || JSON.stringify(errJson);
+      } catch (e) {
+        try {
+          const errText = await res.text();
+          errDetail = errText.slice(0, 512);
+        } catch (_) {}
       }
-    );
+      throw new Error(`HTTP ${res.status}${errDetail ? `: ${errDetail}` : ''}`);
+    }
+
+    if (!res.body) {
+      clearTimeout(idleTimer);
+      throw new Error('Response body is null or undefined');
+    }
 
     let fullText = '';
+    const decoder = new TextDecoder('utf8');
+    const reader = res.body.getReader();
+    let lineBuffer = '';
+    let currentEventType = 'message';
 
-    for await (const chunk of stream) {
-      if (!chunk) continue;
+    const processSseLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        currentEventType = 'message';
+        return;
+      }
 
-      const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : (chunk.choices ? chunk.choices[0] : null);
-      const delta = choice?.delta || chunk.delta;
+      if (trimmed.startsWith(':')) {
+        return;
+      }
 
-      if (delta && delta.content) {
-        if (fullText.length < MAX_STREAM_CHARS) {
-          fullText += delta.content;
+      if (trimmed.startsWith('event:')) {
+        currentEventType = trimmed.slice(6).trim();
+        return;
+      }
+
+      if (trimmed.startsWith('data:')) {
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') {
+          return;
+        }
+
+        let chunk;
+        try {
+          chunk = JSON.parse(dataStr);
+        } catch (e) {
+          return;
+        }
+
+        // Handle Hermes custom SSE event: hermes.tool.progress
+        const isToolProgress = currentEventType === 'hermes.tool.progress' ||
+                               currentEventType === 'tool_progress' ||
+                               chunk.event === 'hermes.tool.progress' ||
+                               chunk.event === 'tool_progress';
+        const eventData = chunk.data || chunk.hermes_event || (typeof chunk.event === 'object' ? chunk.event : (isToolProgress ? chunk : null));
+
+        if (isToolProgress && eventData) {
+          const ev = eventData;
           process.stdout.write(JSON.stringify({
-            type: 'delta',
+            type: 'tool_progress',
             session_id: emitSessionId,
             raw_session_id: resolvedSessionId,
             composite_id: compositeId,
-            content: delta.content
+            tool: ev.tool || ev.name || 'tool',
+            status: ev.status || 'running',
+            label: ev.label || ev.detail || ev.message || '',
+            emoji: ev.emoji || '',
+            id: ev.toolCallId || ev.id || ''
           }) + '\n');
+          return;
         }
-      }
 
-      if (delta && delta.tool_calls && Array.isArray(delta.tool_calls)) {
-        for (const tc of delta.tool_calls) {
-          const fn = tc?.function;
-          if (fn && fn.name) {
+        // Standard OpenAI chunk structure
+        const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : (chunk.choices ? chunk.choices[0] : null);
+        const delta = choice?.delta || chunk.delta;
+
+        if (delta && delta.content) {
+          if (fullText.length < MAX_STREAM_CHARS) {
+            fullText += delta.content;
             process.stdout.write(JSON.stringify({
-              type: 'tool_progress',
+              type: 'delta',
               session_id: emitSessionId,
               raw_session_id: resolvedSessionId,
               composite_id: compositeId,
-              tool: fn.name,
-              status: 'running',
-              label: fn.arguments || '',
-              id: tc.id || tc.call_id || ''
+              content: delta.content
             }) + '\n');
           }
         }
+
+        if (delta && delta.tool_calls && Array.isArray(delta.tool_calls)) {
+          for (const tc of delta.tool_calls) {
+            const fn = tc?.function;
+            if (fn && fn.name) {
+              process.stdout.write(JSON.stringify({
+                type: 'tool_progress',
+                session_id: emitSessionId,
+                raw_session_id: resolvedSessionId,
+                composite_id: compositeId,
+                tool: fn.name,
+                status: 'running',
+                label: fn.arguments || '',
+                id: tc.id || tc.call_id || ''
+              }) + '\n');
+            }
+          }
+        }
+      }
+    };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        resetIdleTimer();
+
+        lineBuffer += decoder.decode(value, { stream: true });
+        const lines = lineBuffer.split(/\r?\n/);
+        lineBuffer = lines.pop();
+
+        for (const line of lines) {
+          processSseLine(line);
+        }
       }
 
-      // Handle Hermes custom SSE event: hermes.tool.progress
-      const isToolProgress = chunk.event === 'hermes.tool.progress' || chunk.event === 'tool_progress';
-      const eventData = chunk.data || chunk.hermes_event || (typeof chunk.event === 'object' ? chunk.event : null);
-
-      if (isToolProgress && eventData) {
-        const ev = eventData;
-        process.stdout.write(JSON.stringify({
-          type: 'tool_progress',
-          session_id: emitSessionId,
-          raw_session_id: resolvedSessionId,
-          composite_id: compositeId,
-          tool: ev.tool || ev.name || 'tool',
-          status: ev.status || 'running',
-          label: ev.label || ev.detail || ev.message || '',
-          emoji: ev.emoji || '',
-          id: ev.toolCallId || ev.id || ''
-        }) + '\n');
+      if (lineBuffer && lineBuffer.trim()) {
+        processSseLine(lineBuffer);
       }
+    } finally {
+      clearTimeout(idleTimer);
+      try { await reader.cancel(); } catch (_) {}
     }
 
     process.stdout.write(JSON.stringify({

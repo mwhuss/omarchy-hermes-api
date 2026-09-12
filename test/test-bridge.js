@@ -2,6 +2,7 @@
  * Test suite for Hermes API Bridge and Subprocess Interface
  */
 
+const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -10,10 +11,10 @@ const assert = require('assert');
 
 const bridgePath = path.join(__dirname, '..', 'bin', 'hermes-bridge.js');
 
-function runBridge(args, input = null) {
+function runBridge(args, input = null, envExtra = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [bridgePath, ...args], {
-      env: process.env,
+      env: { ...process.env, ...envExtra },
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -354,12 +355,85 @@ async function testListTargetsAndActiveTarget() {
   console.log('  ✔ set-active-target passed');
 }
 
+async function testZeroDependencies() {
+  console.log('Testing: package.json zero-dependency configuration...');
+  const pkgPath = path.join(__dirname, '..', 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  assert(!pkg.dependencies || Object.keys(pkg.dependencies).length === 0, 'package.json should have no runtime dependencies');
+  assert(pkg.engines && pkg.engines.node, 'package.json must specify engines.node');
+  console.log('  ✔ zero runtime dependencies and engines declaration verified');
+}
+
+async function testMockSseStreamWithCustomEvents() {
+  console.log('Testing: native fetch SSE parser with custom events and fragmented chunks...');
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+
+      // Write an SSE comment
+      res.write(': ping\n\n');
+
+      // Write custom Hermes tool progress event
+      res.write('event: hermes.tool.progress\n');
+      res.write('data: {"tool":"terminal_run","status":"running","label":"ls -la","id":"call_test_123"}\n\n');
+
+      // Write delta tokens with artificial chunk fragmentation
+      res.write('data: {"choices":[{"delta":{"con');
+      setTimeout(() => {
+        res.write('tent":"Fragmented ' + 'tokens"}}]}\n\n');
+        res.write('data: [DONE]\n\n');
+        res.end();
+      }, 50);
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${port}`,
+      HERMES_API_SERVER_PORT: String(port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const lines = res.stdout.trim().split('\n').filter(Boolean);
+    const events = lines.map(l => JSON.parse(l));
+
+    const toolEvent = events.find(e => e.type === 'tool_progress');
+    assert(toolEvent, 'tool_progress event should be parsed from custom SSE event');
+    assert.strictEqual(toolEvent.tool, 'terminal_run');
+    assert.strictEqual(toolEvent.id, 'call_test_123');
+
+    const deltaEvent = events.find(e => e.type === 'delta');
+    assert(deltaEvent, 'delta event should be parsed across fragmented chunks');
+    assert.strictEqual(deltaEvent.content, 'Fragmented tokens');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'done event should be emitted');
+    assert.strictEqual(doneEvent.full_text, 'Fragmented tokens');
+
+    console.log('  ✔ native fetch SSE parser handled comments, custom events, and chunk fragmentation');
+  } finally {
+    server.close();
+  }
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
   console.log('====================================\n');
 
   try {
+    await testZeroDependencies();
+    await testMockSseStreamWithCustomEvents();
     await testManifest();
     await testSettings();
     await testMonograms();

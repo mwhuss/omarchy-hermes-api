@@ -8,6 +8,9 @@
     "reload": "omarchy-restart-shell",
     "install-plugin": "bash bin/install.sh"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "keywords": [
     "omarchy",
     "quickshell",
@@ -17,8 +20,5 @@
     "plugin"
   ],
   "author": "mwhuss",
-  "license": "MIT",
-  "dependencies": {
-    "openai": "7.10.0"
-  }
+  "license": "MIT"
 }
