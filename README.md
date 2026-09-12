@@ -1,6 +1,6 @@
 # Omarchy Hermes API Plugin
 
-A native [Omarchy](https://github.com/omarchy) menu bar plugin and flyout interface for interacting with [Hermes Agent](https://github.com/NousResearch/Hermes-Function-Calling) sessions via the Hermes API server.
+A native [Omarchy](https://github.com/omarchy) menu bar plugin and flyout interface for interacting with [Hermes Agent](https://github.com/NousResearch/Hermes-Function-Calling) sessions via the [Hermes API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server).
 
 Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweight Node.js stdio bridge.
 
