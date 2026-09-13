@@ -11,6 +11,25 @@ const assert = require('assert');
 
 const bridgePath = path.join(__dirname, '..', 'bin', 'hermes-bridge.js');
 
+const createdSessionIds = [];
+
+function trackCreatedSessionFromStdout(stdout) {
+  try {
+    const lines = stdout.trim().split('\n');
+    for (const line of lines) {
+      const ev = JSON.parse(line);
+      if (ev && ev.type === 'start') {
+        const sid = ev.composite_id || ev.session_id;
+        if (sid && !createdSessionIds.includes(sid)) {
+          createdSessionIds.push(sid);
+          return sid;
+        }
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
 function runBridge(args, input = null, envExtra = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [bridgePath, ...args], {
@@ -66,6 +85,7 @@ async function testStreamChat() {
   console.log('Testing: stream-chat command...');
   const res = await runBridge(['stream-chat', '--prompt', 'Respond with the word "TEST" only.']);
   assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+  trackCreatedSessionFromStdout(res.stdout);
   
   const lines = res.stdout.trim().split('\n');
   assert(lines.length > 0, 'Should output at least one NDJSON event line');
@@ -82,6 +102,7 @@ async function testStreamChat() {
     prompt: 'Respond with "JSON_INPUT_OK" only.'
   }) + '\n');
   assert.strictEqual(jsonInputRes.code, 0, `Exit code should be 0, got ${jsonInputRes.code}`);
+  trackCreatedSessionFromStdout(jsonInputRes.stdout);
   const jsonInputLines = jsonInputRes.stdout.trim().split('\n');
   assert(jsonInputLines.length > 0, 'Should output at least one line');
   const jsonEvents = jsonInputLines.map(l => JSON.parse(l));
@@ -155,6 +176,7 @@ async function testStreamChatNotify() {
   console.log('Testing: stream-chat with --notify flag...');
   const res = await runBridge(['stream-chat', '--prompt', 'Respond with "OK" only.', '--notify']);
   assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+  trackCreatedSessionFromStdout(res.stdout);
 
   const lines = res.stdout.trim().split('\n');
   assert(lines.length > 0, 'Should output at least one NDJSON event line');
@@ -172,6 +194,7 @@ async function testClientGeneratedSessionId() {
   console.log('Testing: client session ID auto-generation and event tagging...');
   const res = await runBridge(['stream-chat', '--prompt', 'Reply with "AUTO_ID_OK" only.']);
   assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+  trackCreatedSessionFromStdout(res.stdout);
 
   const lines = res.stdout.trim().split('\n');
   assert(lines.length > 0, 'Should output at least one line');
@@ -205,6 +228,11 @@ async function testConcurrentStreams() {
     runBridge(['stream-chat', '--session', session1, '--prompt', 'Reply with "CONC_ONE" only.']),
     runBridge(['stream-chat', '--session', session2, '--prompt', 'Reply with "CONC_TWO" only.'])
   ]);
+
+  trackCreatedSessionFromStdout(res1.stdout);
+  trackCreatedSessionFromStdout(res2.stdout);
+  if (!createdSessionIds.includes(session1)) createdSessionIds.push(session1);
+  if (!createdSessionIds.includes(session2)) createdSessionIds.push(session2);
 
   assert.strictEqual(res1.code, 0, `Stream 1 exit code should be 0, got ${res1.code}`);
   assert.strictEqual(res2.code, 0, `Stream 2 exit code should be 0, got ${res2.code}`);
@@ -321,7 +349,8 @@ async function testSettings() {
 }
 
 async function testMonograms() {
-  console.log('Testing: monogram command and algorithm...');
+  console.log('Testing: monogram algorithm...');
+  const { getAgentMonogram, getAgentColor } = require(bridgePath);
   const cases = [
     { input: 'Luna Bot', expected: 'LB' },
     { input: 'LunaBot', expected: 'LB' },
@@ -330,11 +359,10 @@ async function testMonograms() {
     { input: 'Deep Research Agent', expected: 'DR' }
   ];
   for (const c of cases) {
-    const res = await runBridge(['monogram', c.input]);
-    assert.strictEqual(res.code, 0);
-    const json = JSON.parse(res.stdout);
-    assert.strictEqual(json.monogram, c.expected, `Monogram for "${c.input}" should be "${c.expected}", got "${json.monogram}"`);
-    assert(json.color.startsWith('#'), 'Color should be hex string');
+    const monogram = getAgentMonogram(c.input);
+    const color = getAgentColor(c.input);
+    assert.strictEqual(monogram, c.expected, `Monogram for "${c.input}" should be "${c.expected}", got "${monogram}"`);
+    assert(color.startsWith('#'), 'Color should be hex string');
   }
   console.log('  ✔ monogram generation rules verified (2-word, CamelCase, 1-word)');
 }
@@ -465,6 +493,47 @@ async function testMockSseStreamWithCustomEvents() {
   }
 }
 
+async function testDeleteCreatedSessions() {
+  console.log(`Testing: delete-session command and cleanup of created test sessions...`);
+  assert(createdSessionIds.length > 0, 'Should have tracked sessions created during testing');
+
+  // Also clean up any lingering test-concurrent-* sessions from prior test runs
+  const initialListRes = await runBridge(['list-sessions']);
+  const initialList = JSON.parse(initialListRes.stdout);
+  if (Array.isArray(initialList.sessions)) {
+    for (const s of initialList.sessions) {
+      if (s.id.includes('test-concurrent-') && !createdSessionIds.includes(s.id)) {
+        createdSessionIds.push(s.id);
+      }
+    }
+  }
+
+  let deletedCount = 0;
+  for (const sid of createdSessionIds) {
+    const res = await runBridge(['delete-session', '--', sid]);
+    assert.strictEqual(res.code, 0, `delete-session exit code should be 0 for ${sid}, got ${res.code}`);
+    const json = JSON.parse(res.stdout);
+    assert.strictEqual(json.success, true, `delete-session should succeed for ${sid}`);
+    assert.strictEqual(json.deleted, true, `delete-session should report deleted: true for ${sid}`);
+    deletedCount++;
+  }
+
+  // Verify that none of the deleted sessions remain in list-sessions
+  const listRes = await runBridge(['list-sessions']);
+  assert.strictEqual(listRes.code, 0);
+  const listJson = JSON.parse(listRes.stdout);
+  assert.strictEqual(listJson.success, true);
+  const remainingIds = new Set((listJson.sessions || []).map(s => s.id));
+
+  for (const sid of createdSessionIds) {
+    const rawId = sid.includes(':') ? sid.split(':').slice(2).join(':') : sid;
+    const stillExists = Array.from(remainingIds).some(id => id === sid || id.endsWith(`:${rawId}`));
+    assert(!stillExists, `Deleted session ${sid} should no longer appear in list-sessions`);
+  }
+
+  console.log(`  ✔ successfully deleted all ${deletedCount} created test sessions and verified removal`);
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -486,6 +555,7 @@ async function runAllTests() {
     await testClientGeneratedSessionId();
     await testConcurrentStreams();
     await testStreamChatNotify();
+    await testDeleteCreatedSessions();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
     console.log('====================================\n');

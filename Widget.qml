@@ -47,39 +47,25 @@ Panel {
 
   function getMonogram(name) {
     if (!name || typeof name !== "string") return "H"
+    for (var i = 0; i < root.allAgentTargets.length; i++) {
+      var t = root.allAgentTargets[i]
+      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
+        if (t.monogram) return t.monogram
+      }
+    }
     var clean = name.trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
-    var words = clean.split(/\s+/).filter(Boolean)
-    if (words.length >= 2) {
-      return (words[0][0] + words[1][0]).toUpperCase()
-    }
-    var single = words[0] || ""
-    var uppers = single.match(/[A-Z]/g)
-    if (uppers && uppers.length >= 2) {
-      return (uppers[0] + uppers[1]).toUpperCase()
-    }
-    return (single[0] || "H").toUpperCase()
+    return (clean[0] || "H").toUpperCase()
   }
 
-  readonly property var agentColors: [
-    "#3B82F6",
-    "#10B981",
-    "#8B5CF6",
-    "#EC4899",
-    "#F59E0B",
-    "#06B6D4",
-    "#6366F1",
-    "#14B8A6",
-    "#F97316",
-    "#84CC16"
-  ]
-
   function getAgentColor(name) {
-    if (!name || typeof name !== "string") return root.agentColors[0]
-    var hash = 0
-    for (var i = 0; i < name.length; i++) {
-      hash = ((hash * 31 + name.charCodeAt(i)) >>> 0)
+    if (!name || typeof name !== "string") return "#3B82F6"
+    for (var i = 0; i < root.allAgentTargets.length; i++) {
+      var t = root.allAgentTargets[i]
+      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
+        if (t.color) return t.color
+      }
     }
-    return root.agentColors[hash % root.agentColors.length]
+    return "#3B82F6"
   }
 
   function getEndpointDisplayName(endpointId) {
@@ -247,21 +233,12 @@ Panel {
     }
     updateFilteredSessions()
     refreshSessions()
-    if (endpointId && endpointId !== "all") {
-      setActiveTargetProc.command = [
-        "/usr/bin/node", "--", root.scriptPath, "set-active-target",
-        "--endpoint", endpointId,
-        "--profile", profileName || "default"
-      ]
-      setActiveTargetProc.running = true
-    } else {
-      setActiveTargetProc.command = [
-        "/usr/bin/node", "--", root.scriptPath, "set-active-target",
-        "--endpoint", "all",
-        "--profile", ""
-      ]
-      setActiveTargetProc.running = true
-    }
+    setActiveTargetProc.command = [
+      "/usr/bin/node", "--", root.scriptPath, "set-active-target",
+      "--endpoint", (endpointId && endpointId !== "all") ? endpointId : "all",
+      "--profile", (endpointId && endpointId !== "all") ? (profileName || "default") : ""
+    ]
+    setActiveTargetProc.running = true
   }
 
   function startNewSessionForTarget(endpointId, profileName) {
@@ -1176,17 +1153,8 @@ Panel {
   }
 
   function postCompletionNotification(content, isError, sessionId) {
-    var notifyOnComp = root.setting("notifyOnComplete", true)
-    var notifyOnErr = root.setting("notifyOnError", true)
-
-    if (isError) {
-      if (!notifyOnErr) {
-        return
-      }
-    } else {
-      if (!notifyOnComp) {
-        return
-      }
+    if (isError ? !root.setting("notifyOnError", true) : !root.setting("notifyOnComplete", true)) {
+      return
     }
 
     var targetId = sessionId || root.selectedSessionId || ""
@@ -1202,45 +1170,25 @@ Panel {
     }
 
     var title = isError ? (targetTitle + " - Error") : targetTitle
-
-    // Format a concise preview by cleaning markdown syntax
-    var preview = String(content || "").trim()
-    preview = preview.replace(/```[\s\S]*?```/g, "[Code]")
-    preview = preview.replace(/`([^`]+)`/g, "$1")
-    preview = preview.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
-    preview = preview.replace(/[*_~>#]/g, "")
-    preview = preview.replace(/\s+/g, " ").trim()
-
-    if (preview.length > 140) {
-      preview = preview.slice(0, 137) + "..."
-    }
+    var preview = root.sanitizePlain(String(content || "").replace(/[`*_~>#]/g, "").replace(/\s+/g, " "), 140)
     if (!preview) {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
-    var cleanTitle = root.sanitizePlain(title, 80)
-    var cleanPreview = root.sanitizePlain(preview, 140)
-    var cleanAppName = root.sanitizePlain(root.serverName, 40) || "Hermes"
-    var urgency = isError ? "critical" : "normal"
-
-    var notifyArgs = [
+    Quickshell.execDetached([
       "/usr/bin/notify-send",
-      "-a", cleanAppName,
-      "-u", urgency,
+      "-a", root.sanitizePlain(root.serverName, 40) || "Hermes",
+      "-u", isError ? "critical" : "normal",
       "--",
-      cleanTitle,
-      cleanPreview
-    ]
-
-    Quickshell.execDetached(notifyArgs)
+      root.sanitizePlain(title, 80),
+      preview
+    ])
   }
 
   IpcHandler {
     target: "com.mwhuss.omarchy-hermes-api"
     function open(): void { root.open() }
     function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function newSession(): string {
       root.open()
@@ -1339,12 +1287,16 @@ Panel {
     getSettingsProc.running = true
   }
 
+  function cloneSettings(obj) {
+    return JSON.parse(JSON.stringify(obj))
+  }
+
   function parseSettings(text) {
     if (!text || String(text).trim() === "") return
     try {
       var data = JSON.parse(text)
       if (data && data.success && data.settings && Array.isArray(data.settings.endpoints)) {
-        var eps = JSON.parse(JSON.stringify(data.settings.endpoints))
+        var eps = cloneSettings(data.settings.endpoints)
         root.settingsEndpoints = eps
         if (root.selectedEndpointIndex >= eps.length) {
           root.selectedEndpointIndex = Math.max(0, eps.length - 1)
@@ -1364,7 +1316,7 @@ Panel {
         root.settingsSuccessMessage = "Settings saved successfully"
         settingsSuccessTimer.restart()
         if (data.settings && Array.isArray(data.settings.endpoints)) {
-          root.settingsEndpoints = JSON.parse(JSON.stringify(data.settings.endpoints))
+          root.settingsEndpoints = cloneSettings(data.settings.endpoints)
           if (root.settingsEndpoints.length > 0) {
             var activeEp = root.settingsEndpoints[0]
             root.serverName = activeEp.name || "Hermes"
@@ -1381,13 +1333,13 @@ Panel {
 
   function updateEndpointField(index, field, value) {
     if (index < 0 || index >= root.settingsEndpoints.length) return
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     eps[index][field] = value
     root.settingsEndpoints = eps
   }
 
   function addEndpoint() {
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     var newEp = {
       id: "endpoint-" + Date.now(),
       name: "New Endpoint",
@@ -1405,7 +1357,7 @@ Panel {
 
   function deleteCurrentEndpoint() {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     eps.splice(root.selectedEndpointIndex, 1)
     root.settingsEndpoints = eps
     root.selectedEndpointIndex = Math.max(0, Math.min(root.selectedEndpointIndex, eps.length - 1))
@@ -1415,7 +1367,7 @@ Panel {
 
   function addProfileToCurrentEndpoint() {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     var ep = eps[root.selectedEndpointIndex]
     if (!ep.profiles) ep.profiles = []
     ep.profiles.push({
@@ -1435,7 +1387,7 @@ Panel {
 
   function deleteProfileFromCurrentEndpoint(profIndex) {
     if (root.selectedEndpointIndex < 0 || root.selectedEndpointIndex >= root.settingsEndpoints.length) return
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     var ep = eps[root.selectedEndpointIndex]
     if (!ep.profiles || profIndex < 0 || profIndex >= ep.profiles.length) return
     ep.profiles.splice(profIndex, 1)
@@ -1450,7 +1402,7 @@ Panel {
       return
     }
 
-    var eps = JSON.parse(JSON.stringify(root.settingsEndpoints))
+    var eps = cloneSettings(root.settingsEndpoints)
     for (var i = 0; i < eps.length; i++) {
       var ep = eps[i]
       var name = (ep.name || "").trim()
@@ -2923,65 +2875,42 @@ Panel {
                       Layout.alignment: Qt.AlignHCenter
                       spacing: 8
 
-                      Rectangle {
-                        height: 26
-                        radius: 13
-                        color: pill1Hover.containsMouse ? root.cardHover : root.cardBg
-                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-                        implicitWidth: pill1Text.implicitWidth + 16
+                      Repeater {
+                        model: [
+                          { label: "🌤 Check Weather", prompt: "Check the local weather forecast." },
+                          { label: "⚡ System Summary", prompt: "Give me a quick summary of the system." }
+                        ]
 
-                        MouseArea {
-                          id: pill1Hover
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: {
-                            if (promptInput) {
-                              promptInput.text = "Check the local weather forecast."
-                              root.sendCurrentMessage()
+                        delegate: Rectangle {
+                          required property var modelData
+                          height: 26
+                          radius: 13
+                          color: pillHover.containsMouse ? root.cardHover : root.cardBg
+                          border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+                          implicitWidth: pillText.implicitWidth + 16
+
+                          MouseArea {
+                            id: pillHover
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              if (promptInput) {
+                                promptInput.text = modelData.prompt
+                                root.sendCurrentMessage()
+                              }
                             }
                           }
-                        }
 
-                        Text {
-  textFormat: Text.PlainText
-                          id: pill1Text
-                          anchors.centerIn: parent
-                          text: "🌤 Check Weather"
-                          font.family: root.fontFamily
-                          font.pixelSize: 10
-                          color: root.foreground
-                        }
-                      }
-
-                      Rectangle {
-                        height: 26
-                        radius: 13
-                        color: pill2Hover.containsMouse ? root.cardHover : root.cardBg
-                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
-                        implicitWidth: pill2Text.implicitWidth + 16
-
-                        MouseArea {
-                          id: pill2Hover
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: {
-                            if (promptInput) {
-                              promptInput.text = "Give me a quick summary of the system."
-                              root.sendCurrentMessage()
-                            }
+                          Text {
+                            id: pillText
+                            textFormat: Text.PlainText
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            font.family: root.fontFamily
+                            font.pixelSize: 10
+                            color: root.foreground
                           }
-                        }
-
-                        Text {
-  textFormat: Text.PlainText
-                          id: pill2Text
-                          anchors.centerIn: parent
-                          text: "⚡ System Summary"
-                          font.family: root.fontFamily
-                          font.pixelSize: 10
-                          color: root.foreground
                         }
                       }
                     }
@@ -3264,7 +3193,7 @@ Panel {
                           font.pixelSize: 11
                           color: root.foreground
                           wrapMode: Text.Wrap
-                          textFormat: Text.PlainText
+                          textFormat: modelData.role === "assistant" ? Text.MarkdownText : Text.PlainText
                           onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                         }
                       }
@@ -3388,7 +3317,7 @@ Panel {
                         font.pixelSize: 11
                         color: root.foreground
                         wrapMode: Text.Wrap
-                        textFormat: Text.PlainText
+                        textFormat: Text.MarkdownText
                         onLinkActivated: function(link) { Qt.openUrlExternally(link) }
                       }
                     }
@@ -4721,14 +4650,14 @@ Panel {
                           width: 24
                           height: 24
                           radius: 12
-                          color: profCard.modelData.color || root.getAgentColor(profCard.modelData.isDefault ? epGroupCol.modelData.name : profCard.modelData.name)
+                          color: profCard.modelData.color || root.accent
                           Layout.alignment: Qt.AlignVCenter
 
                           Text {
   textFormat: Text.PlainText
                             anchors.centerIn: parent
                             anchors.verticalCenterOffset: 1
-                            text: profCard.modelData.monogram || root.getMonogram(profCard.modelData.isDefault ? epGroupCol.modelData.name : profCard.modelData.name)
+                            text: profCard.modelData.monogram || "H"
                             color: "#FFFFFF"
                             font.family: root.fontFamily
                             font.pixelSize: 10
@@ -4907,14 +4836,14 @@ Panel {
                       width: 28
                       height: 28
                       radius: 14
-                      color: agentTargetCard.modelData.color || root.getAgentColor(agentTargetCard.modelData.displayName)
+                      color: agentTargetCard.modelData.color || root.accent
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
   textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
-                        text: agentTargetCard.modelData.monogram || root.getMonogram(agentTargetCard.modelData.displayName)
+                        text: agentTargetCard.modelData.monogram || "H"
                         color: "#FFFFFF"
                         font.family: root.fontFamily
                         font.pixelSize: 11

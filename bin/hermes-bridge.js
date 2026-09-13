@@ -47,71 +47,47 @@ function isPrivateOrLoopbackHost(hostname) {
   return false;
 }
 
+function parseEndpointUrl(rawUrl, defaultPort = 8642, strict = false) {
+  let url = String(rawUrl || `http://127.0.0.1:${defaultPort}`).trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = `http://${url}`;
+  }
+  try {
+    const p = new URL(url);
+    if (!p.port && defaultPort) p.port = String(defaultPort);
+    return p;
+  } catch (e) {
+    if (strict) throw e;
+    return new URL(`http://127.0.0.1:${defaultPort}`);
+  }
+}
+
 function sanitizeHeaderValue(val) {
   return String(val || '').replace(/[\r\n\0]/g, '').trim();
 }
 
 function readBoundedFile(filePath, maxBytes = MAX_SETTINGS_BYTES) {
   try {
-    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0);
-    const fd = fs.openSync(filePath, flags);
-    try {
-      const st = fs.fstatSync(fd);
-      if (!st.isFile()) {
-        return null;
-      }
-      if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
-        return null;
-      }
-      if ((st.mode & 0o077) !== 0) {
-        try { fs.fchmodSync(fd, 0o600); } catch (e) {}
-      }
-      if (st.size > maxBytes) {
-        return null;
-      }
-      const buf = Buffer.alloc(maxBytes + 1);
-      const bytesRead = fs.readSync(fd, buf, 0, maxBytes + 1, 0);
-      if (bytesRead > maxBytes) {
-        return null;
-      }
-      return buf.subarray(0, bytesRead).toString('utf8');
-    } finally {
-      fs.closeSync(fd);
+    if (!fs.existsSync(filePath)) return null;
+    const st = fs.statSync(filePath);
+    if (!st.isFile() || st.size > maxBytes) return null;
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null;
+    if ((st.mode & 0o077) !== 0) {
+      try { fs.chmodSync(filePath, 0o600); } catch (e) {}
     }
+    return fs.readFileSync(filePath, 'utf8');
   } catch (e) {
     return null;
   }
 }
 
-function readStdinLineOrEof(maxBytes = 262144) {
-  return new Promise((resolve) => {
-    let buf = '';
-    const rl = readline.createInterface({ input: process.stdin, terminal: false });
-    let resolved = false;
-    rl.on('line', (line) => {
-      if (!resolved) {
-        resolved = true;
-        rl.close();
-        resolve(line);
-      }
-    });
-    rl.on('close', () => {
-      if (!resolved) {
-        resolved = true;
-        resolve(buf);
-      }
-    });
-    process.stdin.on('data', (chunk) => {
-      if (!resolved) {
-        buf += chunk.toString('utf8');
-        if (buf.length > maxBytes) {
-          resolved = true;
-          rl.close();
-          resolve(buf.slice(0, maxBytes));
-        }
-      }
-    });
-  });
+async function readStdinLineOrEof(maxBytes = 262144) {
+  const rl = readline.createInterface({ input: process.stdin, terminal: false });
+  for await (const line of rl) {
+    rl.close();
+    return line.slice(0, maxBytes);
+  }
+  return '';
 }
 
 function ensurePrivateDir(dirPath) {
@@ -132,8 +108,7 @@ function ensurePrivateDir(dirPath) {
 
 function writeAtomicSettings(settingsData) {
   const content = JSON.stringify(settingsData, null, 2) + '\n';
-  const buf = Buffer.from(content, 'utf8');
-  if (buf.length > MAX_SETTINGS_BYTES) {
+  if (Buffer.byteLength(content, 'utf8') > MAX_SETTINGS_BYTES) {
     throw new Error('Settings payload exceeds size limit');
   }
 
@@ -141,33 +116,10 @@ function writeAtomicSettings(settingsData) {
   const dirPath = path.dirname(settingsPath);
   ensurePrivateDir(dirPath);
 
-  const randSuffix = crypto.randomBytes(8).toString('hex');
-  const tmpPath = path.join(dirPath, `.settings.${randSuffix}.tmp`);
-
-  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0);
-  const fd = fs.openSync(tmpPath, flags, 0o600);
-  try {
-    try { fs.fchmodSync(fd, 0o600); } catch (e) {}
-    fs.writeSync(fd, buf, 0, buf.length, 0);
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-  } catch (err) {
-    try { fs.closeSync(fd); } catch (e) {}
-    try { fs.unlinkSync(tmpPath); } catch (e) {}
-    throw err;
-  }
-
-  try {
-    fs.renameSync(tmpPath, settingsPath);
-    try {
-      const dirFd = fs.openSync(dirPath, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY || 0));
-      fs.fsyncSync(dirFd);
-      fs.closeSync(dirFd);
-    } catch (e) {}
-  } catch (err) {
-    try { fs.unlinkSync(tmpPath); } catch (e) {}
-    throw err;
-  }
+  const tmpPath = path.join(dirPath, `.settings.${crypto.randomBytes(6).toString('hex')}.tmp`);
+  fs.writeFileSync(tmpPath, content, { mode: 0o600 });
+  fs.renameSync(tmpPath, settingsPath);
+  try { fs.chmodSync(settingsPath, 0o600); } catch (e) {}
 }
 
 async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeoutMs = 10000) {
@@ -187,25 +139,8 @@ async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeo
   }
 }
 
-async function readBoundedJson(res, maxBytes = MAX_FETCH_BYTES) {
-  if (!res.body) {
-    return {};
-  }
-  const reader = res.body.getReader();
-  let totalBytes = 0;
-  const chunks = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    totalBytes += value.length;
-    if (totalBytes > maxBytes) {
-      try { await reader.cancel(); } catch (e) {}
-      throw new Error(`Response body exceeded maximum allowed limit of ${maxBytes} bytes`);
-    }
-    chunks.push(value);
-  }
-  const fullBuf = Buffer.concat(chunks);
-  return JSON.parse(fullBuf.toString('utf8'));
+async function readBoundedJson(res) {
+  return (res && typeof res.json === 'function') ? await res.json() : {};
 }
 
 function loadHermesEnvFile() {
@@ -371,25 +306,9 @@ function resolveConfig(targetEndpointId, targetProfileName) {
   }
 
   // Precedence: explicit env vars > settings.json > ~/.hermes/.env > default 8642
-  const defaultPort = process.env.HERMES_API_SERVER_PORT || (targetEndpoint && targetEndpoint.port ? String(targetEndpoint.port) : null) || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642';
-  
-  let rawUrl = process.env.HERMES_API_SERVER_URL || (targetEndpoint && targetEndpoint.url ? targetEndpoint.url : null) || hermesEnv.API_SERVER_URL || `http://127.0.0.1:${defaultPort}`;
-
-  // Normalize protocol if missing
-  if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
-    rawUrl = `http://${rawUrl}`;
-  }
-
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(rawUrl);
-  } catch (e) {
-    parsedUrl = new URL(`http://127.0.0.1:${defaultPort}`);
-  }
-
-  if (!parsedUrl.port) {
-    parsedUrl.port = defaultPort;
-  }
+  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || (targetEndpoint && targetEndpoint.port ? String(targetEndpoint.port) : null) || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
+  const rawUrl = process.env.HERMES_API_SERVER_URL || (targetEndpoint && targetEndpoint.url ? targetEndpoint.url : null) || hermesEnv.API_SERVER_URL || `http://127.0.0.1:${defaultPort}`;
+  const parsedUrl = parseEndpointUrl(rawUrl, defaultPort);
 
   const endpointId = targetEndpoint ? targetEndpoint.id : 'endpoint-default';
   const endpointName = (targetEndpoint && targetEndpoint.name) || process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Hermes';
@@ -568,7 +487,9 @@ async function fetchSessionsForConfig(cfg) {
         updated_at: updatedAt,
         source: s.source || s.platform || 'hermes',
         message_count: typeof s.message_count === 'number' ? s.message_count : (s.messages?.length || 0),
-        model: s.model || 'hermes-agent'
+        model: s.model || 'hermes-agent',
+        monogram: getAgentMonogram(cfg.profileName !== 'default' ? cfg.profileName : cfg.endpointName),
+        color: getAgentColor(cfg.profileName !== 'default' ? cfg.profileName : cfg.endpointName)
       };
     });
   } catch (err) {
@@ -649,36 +570,21 @@ async function handleListSessions(targetEndpointId, targetProfileName) {
 
 function formatToolContent(raw) {
   if (raw === null || raw === undefined) return { preview: '', full: '' };
-  let str = typeof raw === 'string' ? raw.trim() : JSON.stringify(raw);
-  
+  const str = typeof raw === 'string' ? raw.trim() : JSON.stringify(raw);
   try {
     let parsed = JSON.parse(str);
     if (parsed && typeof parsed === 'object') {
-      let mainOutput = parsed.output !== undefined ? parsed.output : (parsed.stdout !== undefined ? parsed.stdout : (parsed.result !== undefined ? parsed.result : null));
-      if (mainOutput !== null) {
-        if (typeof mainOutput === 'string') {
-          try {
-            const innerParsed = JSON.parse(mainOutput.trim());
-            return {
-              preview: typeof innerParsed === 'object' ? JSON.stringify(innerParsed) : String(innerParsed).trim(),
-              full: JSON.stringify(innerParsed, null, 2)
-            };
-          } catch (e) {
-            const trimmedText = mainOutput.trim();
-            const firstLine = trimmedText.split('\n')[0] || '';
-            return { preview: firstLine, full: trimmedText };
-          }
-        } else if (typeof mainOutput === 'object') {
-          return { preview: JSON.stringify(mainOutput), full: JSON.stringify(mainOutput, null, 2) };
-        }
+      let out = parsed.output ?? parsed.stdout ?? parsed.result ?? parsed;
+      if (typeof out === 'string') {
+        try { out = JSON.parse(out.trim()); } catch (e) {}
       }
-      return { preview: JSON.stringify(parsed), full: JSON.stringify(parsed, null, 2) };
+      return {
+        preview: typeof out === 'object' ? JSON.stringify(out) : (String(out).trim().split('\n')[0] || ''),
+        full: typeof out === 'object' ? JSON.stringify(out, null, 2) : String(out).trim()
+      };
     }
   } catch (e) {}
-
-  const trimmed = str.trim();
-  const firstLine = trimmed.split('\n')[0] || '';
-  return { preview: firstLine, full: trimmed };
+  return { preview: str.split('\n')[0] || '', full: str };
 }
 
 async function handleGetSession(sessionId, optEndpoint, optProfile) {
@@ -856,47 +762,25 @@ async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
 
 function sendDesktopNotification(title, message, isError = false, appName = 'Hermes') {
   const { spawn } = require('child_process');
-  let cleanMsg = String(message || '').trim();
-  cleanMsg = cleanMsg.replace(/```[\s\S]*?```/g, '[Code]');
-  cleanMsg = cleanMsg.replace(/`([^`]+)`/g, '$1');
-  cleanMsg = cleanMsg.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-  cleanMsg = cleanMsg.replace(/[*_~#]/g, '');
-  cleanMsg = cleanMsg.replace(/[<>&]/g, '');
-  cleanMsg = cleanMsg.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '');
-  cleanMsg = cleanMsg.replace(/\s+/g, ' ').trim();
+  let cleanMsg = String(message || '').replace(/```[\s\S]*?```/g, '[Code]').replace(/[`*_~#<>&]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/\s+/g, ' ').trim();
   if (cleanMsg.length > 140) cleanMsg = cleanMsg.slice(0, 137) + '...';
   if (!cleanMsg) cleanMsg = isError ? 'An error occurred.' : 'Response completed.';
 
-  let cleanTitle = String(title || appName || 'Hermes').replace(/[<>&]/g, '');
-  cleanTitle = cleanTitle.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+  let cleanTitle = String(title || appName || 'Hermes').replace(/[<>&]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/\s+/g, ' ').trim();
   if (cleanTitle.length > 60) cleanTitle = cleanTitle.slice(0, 57) + '...';
 
   const urgency = isError ? 'critical' : 'normal';
+  const bin = fs.existsSync('/usr/share/omarchy/bin/omarchy-notification-send')
+    ? '/usr/share/omarchy/bin/omarchy-notification-send'
+    : (fs.existsSync('/usr/bin/omarchy-notification-send') ? '/usr/bin/omarchy-notification-send' : '/usr/bin/notify-send');
 
-  let bin = '/usr/bin/notify-send';
-  if (fs.existsSync('/usr/share/omarchy/bin/omarchy-notification-send')) {
-    bin = '/usr/share/omarchy/bin/omarchy-notification-send';
-  } else if (fs.existsSync('/usr/bin/omarchy-notification-send')) {
-    bin = '/usr/bin/omarchy-notification-send';
-  }
-
-  let args = [];
-  if (bin.includes('omarchy-notification-send')) {
-    const glyph = isError ? '\u{f015a}' : '\u{f06d3}';
-    args = ['--app-name', appName || 'Hermes', '-u', urgency, '-g', glyph, '--', cleanTitle, cleanMsg];
-  } else {
-    args = ['-a', appName || 'Hermes', '-u', urgency, '--', cleanTitle, cleanMsg];
-  }
+  const args = bin.includes('omarchy-notification-send')
+    ? ['--app-name', appName || 'Hermes', '-u', urgency, '-g', isError ? '\u{f015a}' : '\u{f06d3}', '--', cleanTitle, cleanMsg]
+    : ['-a', appName || 'Hermes', '-u', urgency, '--', cleanTitle, cleanMsg];
 
   try {
-    const child = spawn(bin, args, {
-      detached: true,
-      stdio: 'ignore'
-    });
-    child.unref();
-  } catch (e) {
-    // Ignore notification errors
-  }
+    spawn(bin, args, { detached: true, stdio: 'ignore' }).unref();
+  } catch (e) {}
 }
 
 async function handleStreamChat(options) {
@@ -1222,15 +1106,8 @@ async function handleListTargets() {
 
   if (!endpoints || endpoints.length === 0) {
     // Seed default endpoint
-    const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10);
-    let rawUrl = process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL || 'http://127.0.0.1';
-    let defaultUrl = rawUrl;
-    try {
-      const p = new URL(rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? rawUrl : `http://${rawUrl}`);
-      defaultUrl = `${p.protocol}//${p.hostname}`;
-    } catch (e) {
-      defaultUrl = 'http://127.0.0.1';
-    }
+    const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
+    const defaultUrl = parseEndpointUrl(process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL, defaultPort).origin;
     const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
     const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
 
@@ -1248,19 +1125,7 @@ async function handleListTargets() {
 
   // Test all endpoints in parallel
   const targetResults = await Promise.all(endpoints.map(async ep => {
-    let rawUrl = ep.url;
-    if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
-      rawUrl = `http://${rawUrl}`;
-    }
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(rawUrl);
-    } catch (e) {
-      parsedUrl = new URL(`http://127.0.0.1:${ep.port || 8642}`);
-    }
-    if (!parsedUrl.port && ep.port) {
-      parsedUrl.port = String(ep.port);
-    }
+    const parsedUrl = parseEndpointUrl(ep.url, ep.port || 8642);
     const rootUrl = parsedUrl.origin;
     const isLocal = isLoopbackHost(parsedUrl.hostname);
 
@@ -1408,15 +1273,8 @@ async function handleGetSettings() {
 
   // Seed default settings from active environment / ~/.hermes/.env
   const hermesEnv = loadHermesEnvFile();
-  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10);
-  let rawUrl = process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL || 'http://127.0.0.1';
-  let defaultUrl = rawUrl;
-  try {
-    const p = new URL(rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? rawUrl : `http://${rawUrl}`);
-    defaultUrl = `${p.protocol}//${p.hostname}`;
-  } catch (e) {
-    defaultUrl = 'http://127.0.0.1';
-  }
+  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
+  const defaultUrl = parseEndpointUrl(process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL, defaultPort).origin;
   const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
   const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
 
@@ -1515,13 +1373,9 @@ async function handleSaveSettings(rawInput) {
       return;
     }
 
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = `http://${url}`;
-    }
-
     let parsedUrl;
     try {
-      parsedUrl = new URL(url);
+      parsedUrl = parseEndpointUrl(url, 8642, true);
     } catch (err) {
       console.log(JSON.stringify({
         success: false,
@@ -1628,26 +1482,16 @@ async function handleSaveSettings(rawInput) {
 }
 
 function parseCliOptions(args) {
-  let endpoint = null;
-  let profile = null;
+  let endpoint = null, profile = null;
   const rest = [];
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') {
-      rest.push(...args.slice(i + 1));
-      break;
-    }
-    if ((arg === '--endpoint' || arg === '-e') && i + 1 < args.length) {
-      endpoint = args[++i];
-    } else if ((arg === '--profile' || arg === '-p') && i + 1 < args.length) {
-      profile = args[++i];
-    } else if (arg.startsWith('--endpoint=')) {
-      endpoint = arg.slice(11);
-    } else if (arg.startsWith('--profile=')) {
-      profile = arg.slice(10);
-    } else {
-      rest.push(arg);
-    }
+    const a = args[i];
+    if (a === '--') { rest.push(...args.slice(i + 1)); break; }
+    if ((a === '-e' || a === '--endpoint') && i + 1 < args.length) endpoint = args[++i];
+    else if ((a === '-p' || a === '--profile') && i + 1 < args.length) profile = args[++i];
+    else if (a.startsWith('--endpoint=')) endpoint = a.slice(11);
+    else if (a.startsWith('--profile=')) profile = a.slice(10);
+    else rest.push(a);
   }
   return { endpoint, profile, rest };
 }
@@ -1669,17 +1513,6 @@ async function main() {
     case 'set-active-target':
       await handleSetActiveTarget(rest[1] || endpoint, rest[2] || profile);
       break;
-
-    case 'monogram': {
-      const name = rest.slice(1).join(' ') || 'Hermes';
-      console.log(JSON.stringify({
-        success: true,
-        name,
-        monogram: getAgentMonogram(name),
-        color: getAgentColor(name)
-      }));
-      break;
-    }
 
     case 'list-sessions':
       await handleListSessions(endpoint, profile);
@@ -1755,7 +1588,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, monogram, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
       }));
       process.exit(1);
   }
@@ -1769,6 +1602,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  parseCliOptions
+  parseCliOptions,
+  getAgentMonogram,
+  getAgentColor
 };
 

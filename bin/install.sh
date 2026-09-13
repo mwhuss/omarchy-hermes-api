@@ -15,9 +15,8 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-NODE_MAJOR=$(node -v 2>/dev/null | sed -E 's/^v([0-9]+).*/\1/')
-if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -lt 18 ]; then
-  echo "Error: Node.js version 18 or higher is required (found $(node -v))." >&2
+if ! node -e 'process.exit(process.versions.node.split(".")[0] >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+  echo "Error: Node.js version 18 or higher is required (found $(node -v 2>/dev/null))." >&2
   exit 1
 fi
 
