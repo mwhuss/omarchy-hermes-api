@@ -11,6 +11,144 @@ const assert = require('assert');
 
 const bridgePath = path.join(__dirname, '..', 'bin', 'hermes-bridge.js');
 
+const isLiveTest = process.env.HERMES_LIVE === '1';
+let defaultBridgeEnv = {};
+let mockServer = null;
+const mockSessions = new Map();
+
+function resetMockSessions() {
+  mockSessions.clear();
+  mockSessions.set('seed-session-1', {
+    id: 'seed-session-1',
+    title: 'Initial Test Session',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 2
+  });
+}
+
+function startMockServer() {
+  resetMockSessions();
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const parsedUrl = new URL(req.url, 'http://127.0.0.1');
+      const pathname = parsedUrl.pathname;
+
+      // Models endpoint
+      if (pathname.endsWith('/models') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          object: 'list',
+          data: [{ id: 'hermes-agent', object: 'model' }]
+        }));
+        return;
+      }
+
+      // Chat completions SSE endpoint
+      if (pathname.endsWith('/chat/completions') && req.method === 'POST') {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', () => {
+          const sid = req.headers['x-hermes-session-id'];
+          if (sid && !mockSessions.has(sid)) {
+            mockSessions.set(sid, {
+              id: sid,
+              title: `Session ${sid}`,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              message_count: 1
+            });
+          }
+          res.writeHead(200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive'
+          });
+          res.write(': ping\n\n');
+          res.write('data: {"choices":[{"delta":{"role":"assistant","content":"Mock test response"}}]}\n\n');
+          res.write('data: [DONE]\n\n');
+          res.end();
+        });
+        return;
+      }
+
+      // Session messages endpoint
+      if (pathname.endsWith('/messages') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          messages: [
+            { role: 'user', content: 'Hello' },
+            { role: 'assistant', content: 'Mock response' }
+          ]
+        }));
+        return;
+      }
+
+      // Session collection endpoint
+      if ((pathname.endsWith('/sessions') || pathname.endsWith('/sessions/')) && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          sessions: Array.from(mockSessions.values())
+        }));
+        return;
+      }
+
+      // Single session endpoints (/sessions/:id)
+      const sessionMatch = pathname.match(/\/sessions\/([^/]+)$/);
+      if (sessionMatch) {
+        const sid = decodeURIComponent(sessionMatch[1]);
+        if (req.method === 'GET') {
+          const session = mockSessions.get(sid) || {
+            id: sid,
+            title: `Session ${sid}`,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            message_count: 1
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ session }));
+          return;
+        }
+
+        if (req.method === 'PATCH' || req.method === 'PUT') {
+          let body = '';
+          req.on('data', chunk => { body += chunk; });
+          req.on('end', () => {
+            let newTitle = 'Renamed Session';
+            try {
+              const parsed = JSON.parse(body);
+              if (parsed.title) newTitle = parsed.title;
+            } catch (e) {}
+            if (mockSessions.has(sid)) {
+              mockSessions.get(sid).title = newTitle;
+              mockSessions.get(sid).updated_at = new Date().toISOString();
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ session: { id: sid, title: newTitle } }));
+          });
+          return;
+        }
+
+        if (req.method === 'DELETE') {
+          mockSessions.delete(sid);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, id: sid, deleted: true }));
+          return;
+        }
+      }
+
+      // Default fallback
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Not found' }));
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      resolve(server);
+    });
+    server.on('error', reject);
+  });
+}
+
 const createdSessionIds = [];
 
 function trackCreatedSessionFromStdout(stdout) {
@@ -33,7 +171,7 @@ function trackCreatedSessionFromStdout(stdout) {
 function runBridge(args, input = null, envExtra = {}) {
   return new Promise((resolve, reject) => {
     const proc = spawn('node', [bridgePath, ...args], {
-      env: { ...process.env, ...envExtra },
+      env: { ...process.env, ...defaultBridgeEnv, ...envExtra },
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -344,6 +482,8 @@ async function testSettings() {
   } finally {
     if (initialContent !== null) {
       fs.writeFileSync(settingsPath, initialContent, { mode: 0o600 });
+    } else if (fs.existsSync(settingsPath)) {
+      try { fs.unlinkSync(settingsPath); } catch (e) {}
     }
   }
 }
@@ -539,7 +679,22 @@ async function runAllTests() {
   console.log(' Running Omarchy Hermes API Tests');
   console.log('====================================\n');
 
+  const settingsPath = path.join(os.homedir(), '.config', 'omarchy-hermes-api', 'settings.json');
+  const initialSettings = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, 'utf8') : null;
+
   try {
+    if (isLiveTest) {
+      console.log('Mode: LIVE integration test against Hermes API daemon\n');
+    } else {
+      console.log('Mode: Hermetic test using built-in mock Hermes API server\n');
+      mockServer = await startMockServer();
+      const port = mockServer.address().port;
+      defaultBridgeEnv = {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${port}`,
+        HERMES_API_SERVER_PORT: String(port)
+      };
+    }
+
     testCliOptionsParser();
     await testZeroDependencies();
     await testMockSseStreamWithCustomEvents();
@@ -562,6 +717,15 @@ async function runAllTests() {
   } catch (err) {
     console.error('\n❌ Test failed:', err.message);
     process.exit(1);
+  } finally {
+    if (mockServer) {
+      mockServer.close();
+    }
+    if (initialSettings !== null) {
+      try { fs.writeFileSync(settingsPath, initialSettings, { mode: 0o600 }); } catch (e) {}
+    } else if (fs.existsSync(settingsPath)) {
+      try { fs.unlinkSync(settingsPath); } catch (e) {}
+    }
   }
 }
 

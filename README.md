@@ -149,10 +149,16 @@ If `settings.json` does not exist on initial startup, the plugin automatically s
 
 ## 🧪 Testing
 
-Run the automated bridge integration test suite against your running Hermes API server:
+Run the automated bridge test suite using the built-in, zero-dependency mock Hermes API server (works offline on any development OS or CI):
 
 ```bash
 npm test
+```
+
+To run the integration tests against a live, running Hermes API server (defaulting to `http://127.0.0.1:8642` or `HERMES_API_SERVER_URL`):
+
+```bash
+npm run test:live
 ```
 
 This verifies:
@@ -163,6 +169,8 @@ This verifies:
 - Inline session renaming (`rename-session`)
 - Live NDJSON chat streaming (`stream-chat`)
 - Chat streaming with desktop completion notifications (`--notify`)
+- Multi-session concurrency & auto-generated session IDs
+- Session deletion & cleanup (`delete-session`)
 
 ---
 

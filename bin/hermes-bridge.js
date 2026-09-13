@@ -779,7 +779,9 @@ function sendDesktopNotification(title, message, isError = false, appName = 'Her
     : ['-a', appName || 'Hermes', '-u', urgency, '--', cleanTitle, cleanMsg];
 
   try {
-    spawn(bin, args, { detached: true, stdio: 'ignore' }).unref();
+    const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
   } catch (e) {}
 }
 
