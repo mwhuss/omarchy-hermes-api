@@ -219,6 +219,38 @@ async function testListSessions() {
   console.log(`  ✔ list-sessions passed (retrieved ${json.sessions.length} sessions)`);
 }
 
+async function testListSessionsEmptyEndpoints() {
+  console.log('Testing: list-sessions with no endpoints configured (regression #25)...');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'oha-bridge-test-'));
+  try {
+    const settingsDir = path.join(tmpHome, '.config', 'omarchy-hermes-api');
+    const settingsPath = path.join(settingsDir, 'settings.json');
+
+    // Case 1: no settings file at all
+    const res1 = await runBridge(['list-sessions'], null, { HOME: tmpHome });
+    assert.strictEqual(res1.code, 0, `Exit code should be 0, got ${res1.code}`);
+    const json1 = JSON.parse(res1.stdout);
+    assert.strictEqual(json1.success, true, `json.success should be true, got ${json1.success} (error: ${json1.error})`);
+    assert(Array.isArray(json1.sessions), 'json.sessions should be an array');
+
+    // Case 2: settings file with empty endpoints (the state set-active-target writes)
+    fs.mkdirSync(settingsDir, { recursive: true });
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      endpoints: [],
+      activeTarget: { endpointId: 'all', profileName: 'all' }
+    }), { mode: 0o600 });
+    const res2 = await runBridge(['list-sessions'], null, { HOME: tmpHome });
+    assert.strictEqual(res2.code, 0, `Exit code should be 0, got ${res2.code}`);
+    const json2 = JSON.parse(res2.stdout);
+    assert.strictEqual(json2.success, true, `json.success should be true, got ${json2.success} (error: ${json2.error})`);
+    assert(Array.isArray(json2.sessions), 'json.sessions should be an array');
+
+    console.log(`  ✔ list-sessions with empty endpoints passed (${json2.sessions.length} sessions)`);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
+}
+
 async function testStreamChat() {
   console.log('Testing: stream-chat command...');
   const res = await runBridge(['stream-chat', '--prompt', 'Respond with the word "TEST" only.']);
@@ -704,6 +736,7 @@ async function runAllTests() {
     await testListTargetsAndActiveTarget();
     await testStatus();
     await testListSessions();
+    await testListSessionsEmptyEndpoints();
     await testGetSession();
     await testRenameSession();
     await testStreamChat();

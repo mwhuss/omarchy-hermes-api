@@ -509,9 +509,21 @@ async function handleListSessions(targetEndpointId, targetProfileName) {
       allSessions = await fetchSessionsForConfig(cfg);
     } else {
       // Query all endpoints and profiles
-      const endpoints = (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0)
-        ? settings.endpoints
-        : [resolveConfig()];
+      let endpoints;
+      if (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0) {
+        endpoints = settings.endpoints;
+      } else {
+        // No endpoints configured: fall back to the resolved default endpoint,
+        // shaped like a settings entry so the loop below can rely on id/url/port/profiles.
+        const fallbackCfg = resolveConfig();
+        endpoints = [{
+          id: fallbackCfg.endpointId,
+          name: fallbackCfg.serverName,
+          url: fallbackCfg.rootUrl,
+          port: fallbackCfg.port,
+          profiles: []
+        }];
+      }
 
       const localProfiles = discoverLocalHermesProfiles();
 
