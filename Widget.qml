@@ -1175,14 +1175,21 @@ Panel {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
-    Quickshell.execDetached([
+    var notifyArgs = [
       "/usr/bin/notify-send",
       "-a", root.sanitizePlain(root.serverName, 40) || "Hermes",
-      "-u", isError ? "critical" : "normal",
-      "--",
-      root.sanitizePlain(title, 80),
-      preview
-    ])
+      "-u", isError ? "critical" : "normal"
+    ]
+    var cleanTargetId = targetId ? String(targetId).trim() : ""
+    if (cleanTargetId && cleanTargetId.length <= 128 && /^[A-Za-z0-9:._-]+$/.test(cleanTargetId)) {
+      var execArgv = ["quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
+        "com.mwhuss.omarchy-hermes-api", "openSession", cleanTargetId]
+      notifyArgs.push("--hint=string:omarchy-exec-argv:" + JSON.stringify(execArgv))
+    }
+    notifyArgs.push("--")
+    notifyArgs.push(root.sanitizePlain(title, 80))
+    notifyArgs.push(preview)
+    Quickshell.execDetached(notifyArgs)
   }
 
   IpcHandler {
@@ -1239,6 +1246,7 @@ Panel {
     }
     function openSession(sessionId: string): string {
       root.open()
+      root.isSettingsOpen = false
       if (sessionId && String(sessionId).trim() !== "") {
         var cleanId = String(sessionId).trim()
         if (!isValidSessionId(cleanId)) return "invalid-session-id"

@@ -33,7 +33,7 @@ Configure endpoints and multiplexed agent profiles directly in the flyout settin
   - Automatic loading of the most recent active session.
 - **Rich Markdown Chat**: Formatted Markdown rendering in assistant responses with clickable links and syntax styling.
 - **Custom System Prompts**: Expandable per-session system prompt configuration directly from the empty chat view.
-- **Desktop Completion Notifications**: Standard desktop notifications dispatched via `/usr/bin/notify-send` when Hermes finishes a response or encounters an error.
+- **Desktop Completion Notifications**: Dispatched by the widget via `notify-send` when Hermes finishes a response or encounters an error; clicking a notification opens the flyout on the session that generated it (per ADR 0005).
 - **In-App Settings UI**: Configure servers, ports, API keys, and multiplexed profiles directly inside the UI without editing files or restarting.
 
 ---
