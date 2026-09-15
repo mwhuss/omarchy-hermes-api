@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.mwhuss.omarchy-hermes-api",
   "name": "Hermes Agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "mwhuss",
   "license": "MIT",
   "description": "Manage Hermes Agent sessions, stream responses, and track real-time tool executions from the Omarchy menu bar.",
