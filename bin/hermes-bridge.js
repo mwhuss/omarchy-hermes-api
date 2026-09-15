@@ -288,6 +288,23 @@ function getAgentColor(name) {
   return palette[idx];
 }
 
+function getDefaultEndpoint() {
+  const hermesEnv = loadHermesEnvFile();
+  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
+  const defaultUrl = parseEndpointUrl(process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL, defaultPort).origin;
+  const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
+  const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
+
+  return {
+    id: 'endpoint-default',
+    name: defaultName,
+    url: defaultUrl,
+    port: isNaN(defaultPort) ? 8642 : defaultPort,
+    apiKey: defaultKey,
+    profiles: []
+  };
+}
+
 function resolveConfig(targetEndpointId, targetProfileName) {
   const hermesEnv = loadHermesEnvFile();
   const settings = loadSettingsFile();
@@ -332,10 +349,12 @@ function resolveConfig(targetEndpointId, targetProfileName) {
       throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
     }
     return {
+      id: endpointId,
       endpointId,
       endpointName,
       profileName: 'default',
       isDefault: true,
+      url: rootUrl,
       rootUrl,
       baseUrl: `${rootUrl}/v1`,
       apiPrefix: '/api',
@@ -369,10 +388,12 @@ function resolveConfig(targetEndpointId, targetProfileName) {
     const encProf = encodeURIComponent(resolvedProfile);
 
     return {
+      id: endpointId,
       endpointId,
       endpointName,
       profileName: resolvedProfile,
       isDefault: false,
+      url: rootUrl,
       rootUrl,
       baseUrl: `${rootUrl}/p/${encProf}/v1`,
       apiPrefix: `/p/${encProf}/api`,
@@ -509,9 +530,10 @@ async function handleListSessions(targetEndpointId, targetProfileName) {
       allSessions = await fetchSessionsForConfig(cfg);
     } else {
       // Query all endpoints and profiles
+      const defaultEndpoint = getDefaultEndpoint();
       const endpoints = (settings && Array.isArray(settings.endpoints) && settings.endpoints.length > 0)
         ? settings.endpoints
-        : [resolveConfig()];
+        : [defaultEndpoint];
 
       const localProfiles = discoverLocalHermesProfiles();
 
@@ -534,7 +556,8 @@ async function handleListSessions(targetEndpointId, targetProfileName) {
           }
         }
 
-        const isLocal = ep.url.includes('127.0.0.1') || ep.url.includes('localhost');
+        const epUrl = ep.url || ep.rootUrl || '';
+        const isLocal = epUrl.includes('127.0.0.1') || epUrl.includes('localhost');
         if (isLocal) {
           for (const lp of localProfiles) {
             if (!seen.has(lp.name.toLowerCase())) {
@@ -1103,24 +1126,10 @@ async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile)
 
 async function handleListTargets() {
   const settings = loadSettingsFile() || { endpoints: [] };
-  const hermesEnv = loadHermesEnvFile();
   let endpoints = settings.endpoints;
 
   if (!endpoints || endpoints.length === 0) {
-    // Seed default endpoint
-    const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
-    const defaultUrl = parseEndpointUrl(process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL, defaultPort).origin;
-    const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
-    const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
-
-    endpoints = [{
-      id: 'endpoint-default',
-      name: defaultName,
-      url: defaultUrl,
-      port: isNaN(defaultPort) ? 8642 : defaultPort,
-      apiKey: defaultKey,
-      profiles: []
-    }];
+    endpoints = [getDefaultEndpoint()];
   }
 
   const localProfiles = discoverLocalHermesProfiles();
