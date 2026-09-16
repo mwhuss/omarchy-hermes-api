@@ -3161,15 +3161,22 @@ Panel {
                             }
                           }
 
-                          Text {
-  textFormat: Text.PlainText
+                          TextEdit {
+  textFormat: TextEdit.PlainText
                             visible: toolResultBox.expanded
                             text: modelData.tool_formatted || String(modelData.content || "").trim()
                             font.family: "monospace"
                             font.pixelSize: 9
                             color: root.foreground
-                            wrapMode: Text.Wrap
+                            wrapMode: TextEdit.Wrap
                             Layout.fillWidth: true
+                            readOnly: true
+                            selectByMouse: true
+                            activeFocusOnPress: false
+                            cursorVisible: false
+                            selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                            selectedTextColor: root.foreground
+                            onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                           }
                         }
                       }
@@ -3185,7 +3192,7 @@ Panel {
                         color: modelData.role === "user" ? root.userBubbleBg : root.cardBg
                         border.color: modelData.role === "user" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3) : "transparent"
 
-                        Text {
+                        TextEdit {
                           id: msgText
                           anchors.fill: parent
                           anchors.margins: 8
@@ -3193,9 +3200,16 @@ Panel {
                           font.family: root.fontFamily
                           font.pixelSize: 11
                           color: root.foreground
-                          wrapMode: Text.Wrap
-                          textFormat: modelData.role === "assistant" ? Text.MarkdownText : Text.PlainText
+                          wrapMode: TextEdit.Wrap
+                          textFormat: modelData.role === "assistant" ? TextEdit.MarkdownText : TextEdit.PlainText
+                          readOnly: true
+                          selectByMouse: true
+                          activeFocusOnPress: false
+                          cursorVisible: false
+                          selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                          selectedTextColor: root.foreground
                           onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
+                          onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                         }
                       }
 
@@ -3308,7 +3322,7 @@ Panel {
                         }
                       }
 
-                      Text {
+                      TextEdit {
                         id: streamText
                         anchors.fill: parent
                         anchors.margins: 8
@@ -3317,9 +3331,16 @@ Panel {
                         font.family: root.fontFamily
                         font.pixelSize: 11
                         color: root.foreground
-                        wrapMode: Text.Wrap
-                        textFormat: Text.MarkdownText
+                        wrapMode: TextEdit.Wrap
+                        textFormat: TextEdit.MarkdownText
+                        readOnly: true
+                        selectByMouse: true
+                        activeFocusOnPress: false
+                        cursorVisible: false
+                        selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                        selectedTextColor: root.foreground
                         onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
+                        onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                       }
                     }
                   }
