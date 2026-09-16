@@ -674,6 +674,79 @@ async function testDeleteCreatedSessions() {
   console.log(`  ✔ successfully deleted all ${deletedCount} created test sessions and verified removal`);
 }
 
+function testUrlGuard() {
+  console.log('Testing: url-guard allowlist...');
+  const guardPath = path.join(__dirname, '..', 'bin', 'url-guard.js');
+  const guard = require(guardPath);
+
+  assert(typeof guard.isAllowedWebUrl === 'function', 'isAllowedWebUrl should be a function');
+  assert(typeof guard.openSafeUrl === 'function', 'openSafeUrl should be a function');
+
+  // Allowed: http/https with a non-empty host (case-insensitive, trimmed).
+  const allowed = [
+    'https://example.com',
+    'http://127.0.0.1:8642',
+    'HTTPS://EXAMPLE.COM',
+    '  https://x.com  '
+  ];
+  for (const url of allowed) {
+    assert.strictEqual(guard.isAllowedWebUrl(url), true, `should allow ${JSON.stringify(url)}`);
+  }
+
+  // Rejected: dangerous schemes, custom protocols, relative links, empty, non-strings.
+  const rejected = [
+    'file:///etc/passwd',
+    'data:text/html,<script>alert(1)</script>',
+    'qrc:/x',
+    'javascript:alert(1)',
+    'custom-proto://run',
+    'relative/path',
+    '',
+    null,
+    undefined,
+    42
+  ];
+  for (const url of rejected) {
+    assert.strictEqual(guard.isAllowedWebUrl(url), false, `should reject ${JSON.stringify(url)}`);
+  }
+
+  // Rejected: userinfo in the host, control characters, over-length,
+  // malformed hosts/ports.
+  const rejectedHardened = [
+    'https://user:pass@evil.com',
+    'https://user@evil.com',
+    'http://evil.com\x00',
+    'https://evil.com\x07',
+    'https://' + 'a'.repeat(2049) + '.com',
+    'https://',
+    'https://.com',
+    'https://-bad.com',
+    'http://example.com:99999',
+    'http://example.com:80:443'
+  ];
+  for (const url of rejectedHardened) {
+    assert.strictEqual(guard.isAllowedWebUrl(url), false, `should reject ${JSON.stringify(url)}`);
+  }
+
+  // Allowed: @ in the PATH is fine (only host userinfo is dangerous), and
+  // bracketed IPv6 literals with a port.
+  assert.strictEqual(guard.isAllowedWebUrl('https://github.com/@user'), true, 'path @ should be allowed');
+  assert.strictEqual(guard.isAllowedWebUrl('http://[::1]:8642'), true, 'bracketed IPv6 should be allowed');
+
+  // openSafeUrl must hand the system handler the exact string it validated
+  // (trimmed), and must not call it for rejected URLs.
+  const opened = [];
+  global.Qt = { openUrlExternally: (u) => opened.push(u) };
+  guard.openSafeUrl('  https://x.com  ');
+  guard.openSafeUrl('file:///etc/passwd');
+  guard.openSafeUrl(null);
+  delete global.Qt;
+  assert.strictEqual(opened.length, 1, 'openSafeUrl should open exactly one URL');
+  assert.strictEqual(opened[0], 'https://x.com', 'openSafeUrl should pass the trimmed URL');
+
+  console.log(`  ✔ url-guard allowlist passed (${allowed.length} allowed, ${rejected.length + rejectedHardened.length} rejected)`);
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -699,6 +772,7 @@ async function runAllTests() {
     await testZeroDependencies();
     await testMockSseStreamWithCustomEvents();
     await testManifest();
+    testUrlGuard();
     await testSettings();
     await testMonograms();
     await testListTargetsAndActiveTarget();
