@@ -75,3 +75,7 @@ _Avoid_: Agent destination, route target, bot instance
 An interactive selector allowing the user to designate the destination Agent Target when initiating a new Hermes Session or switching conversation context.
 _Avoid_: Bot selector, profile chooser, model picker
 
+**Safe External URL**:
+A link whose URI scheme is on the strict allowlist (`https://`, `http://`) and whose host is well-formed (no userinfo, no control characters, ≤ 2048 chars) and is therefore permitted to be handed to `Qt.openUrlExternally()`. Activated Markdown links outside the allowlist (`file:`, `data:`, `qrc:`, `javascript:`, custom/relative) are silently ignored.
+_Avoid_: trusted link, validated URL, safe link
+
