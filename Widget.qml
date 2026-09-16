@@ -5,7 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "bin/url-guard.js"
+import "bin/url-guard.js" as UrlGuard
 
 Panel {
   id: root
@@ -3195,7 +3195,7 @@ Panel {
                           color: root.foreground
                           wrapMode: Text.Wrap
                           textFormat: modelData.role === "assistant" ? Text.MarkdownText : Text.PlainText
-                          onLinkActivated: function(link) { openSafeUrl(link) }
+                          onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
                         }
                       }
 
@@ -3319,7 +3319,7 @@ Panel {
                         color: root.foreground
                         wrapMode: Text.Wrap
                         textFormat: Text.MarkdownText
-                        onLinkActivated: function(link) { openSafeUrl(link) }
+                        onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
                       }
                     }
                   }

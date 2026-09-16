@@ -16,9 +16,8 @@
  *     optional `:port` in range 1-65535.
  *
  * Dual-environment module:
- *   - QML (QJSEngine): top-level functions are exposed to the importing QML
- *     file's scope. `module` is undefined here, so the Node export block is
- *     skipped.
+ *   - QML (QJSEngine): imported with a qualifier (e.g. `import "bin/url-guard.js" as UrlGuard`).
+ *     `module` is undefined here, so the Node export block is skipped.
  *   - Node: `module.exports` exposes the same functions so the test suite
  *     exercises the exact code QML runs (no drift between a QML copy and a
  *     test mirror).
