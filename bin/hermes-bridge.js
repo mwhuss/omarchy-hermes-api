@@ -1142,10 +1142,24 @@ async function handleStreamChat(options) {
     }
 
     let fullText = '';
+    let fullReasoning = '';
     const decoder = new TextDecoder('utf8');
     const reader = res.body.getReader();
     let lineBuffer = '';
     let currentEventType = 'message';
+
+    const emitReasoningDelta = (reasoningText) => {
+      if (fullReasoning.length < MAX_STREAM_CHARS) {
+        fullReasoning += reasoningText;
+        process.stdout.write(JSON.stringify({
+          type: 'reasoning_delta',
+          session_id: emitSessionId,
+          raw_session_id: resolvedSessionId,
+          composite_id: compositeId,
+          content: reasoningText
+        }) + '\n');
+      }
+    };
 
     const processSseLine = (line) => {
       const trimmed = line.trim();
@@ -1195,6 +1209,18 @@ async function handleStreamChat(options) {
           return;
         }
 
+        // Handle Hermes custom SSE event: hermes.reasoning.delta
+        const isReasoningEvent = currentEventType === 'hermes.reasoning.delta' ||
+                                 chunk.event === 'hermes.reasoning.delta';
+        if (isReasoningEvent) {
+          const ev = chunk.data || chunk.hermes_event || chunk;
+          const reasoningText = ev.text || ev.content || ev.reasoning;
+          if (typeof reasoningText === 'string' && reasoningText) {
+            emitReasoningDelta(reasoningText);
+          }
+          return;
+        }
+
         // Standard OpenAI chunk structure
         const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : (chunk.choices ? chunk.choices[0] : null);
         const delta = choice?.delta || chunk.delta;
@@ -1209,6 +1235,15 @@ async function handleStreamChat(options) {
               composite_id: compositeId,
               content: delta.content
             }) + '\n');
+          }
+        }
+
+        if (delta) {
+          const reasoningChunk = typeof delta.reasoning_content === 'string'
+            ? delta.reasoning_content
+            : (typeof delta.reasoning === 'string' ? delta.reasoning : '');
+          if (reasoningChunk) {
+            emitReasoningDelta(reasoningChunk);
           }
         }
 
@@ -1263,6 +1298,7 @@ async function handleStreamChat(options) {
       endpoint_id: cfg.endpointId,
       profile_name: cfg.profileName,
       full_text: fullText,
+      full_reasoning: fullReasoning,
       finish_reason: 'stop'
     }) + '\n');
 

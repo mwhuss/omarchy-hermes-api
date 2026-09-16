@@ -280,6 +280,8 @@ Panel {
   // Active chat state
   property var messages: []
   property string currentStreamingContent: ""
+  property string currentStreamingReasoning: ""
+  property bool liveThinkingExpanded: false
   property var currentToolEvents: []
 
   function isSessionStreaming(sessionId) {
@@ -321,6 +323,9 @@ Panel {
   readonly property color toolBadgeBg: Qt.rgba(245/255, 158/255, 11/255, 0.12)
   readonly property color toolBadgeBorder: Qt.rgba(245/255, 158/255, 11/255, 0.35)
   readonly property color toolBadgeText: "#F59E0B"
+  readonly property color thinkingBadgeBg: Qt.rgba(168/255, 85/255, 247/255, 0.12)
+  readonly property color thinkingBadgeBorder: Qt.rgba(168/255, 85/255, 247/255, 0.35)
+  readonly property color thinkingBadgeText: "#A855F7"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property string scriptPath: {
@@ -611,9 +616,11 @@ Panel {
     // Restore active in-flight stream state for this session if streaming
     if (root.activeStreams && root.activeStreams[sessionId]) {
       root.currentStreamingContent = root.activeStreams[sessionId].streamingContent || ""
+      root.currentStreamingReasoning = root.activeStreams[sessionId].streamingReasoning || ""
       root.currentToolEvents = root.activeStreams[sessionId].toolEvents || []
     } else {
       root.currentStreamingContent = ""
+      root.currentStreamingReasoning = ""
       root.currentToolEvents = []
     }
 
@@ -954,6 +961,7 @@ Panel {
     updated[targetSessionId] = {
       proc: procObj,
       streamingContent: "",
+      streamingReasoning: "",
       toolEvents: [],
       startedAt: Date.now()
     }
@@ -970,9 +978,23 @@ Panel {
       if (!streamInfo) return
 
       if (ev.type === "delta") {
+        var hadContent = !!(streamInfo.streamingContent || "")
         streamInfo.streamingContent = (streamInfo.streamingContent || "") + (ev.content || "")
+        if (!hadContent && streamInfo.streamingContent) {
+          root.liveThinkingExpanded = false
+        }
         if (root.selectedSessionId === targetSessionId) {
           root.currentStreamingContent = streamInfo.streamingContent
+          root.autoScrollFollow()
+        }
+      } else if (ev.type === "reasoning_delta") {
+        var hadReasoning = !!(streamInfo.streamingReasoning || "")
+        streamInfo.streamingReasoning = (streamInfo.streamingReasoning || "") + (ev.content || "")
+        if (!hadReasoning && streamInfo.streamingReasoning && !streamInfo.streamingContent) {
+          root.liveThinkingExpanded = true
+        }
+        if (root.selectedSessionId === targetSessionId) {
+          root.currentStreamingReasoning = streamInfo.streamingReasoning
           root.autoScrollFollow()
         }
       } else if (ev.type === "tool_progress") {
@@ -1009,16 +1031,17 @@ Panel {
         }
       } else if (ev.type === "done") {
         var replyText = ev.full_text || streamInfo.streamingContent || ""
-        root.finishSessionStream(targetSessionId, replyText, false, streamInfo.toolEvents)
+        var replyReasoning = ev.full_reasoning || streamInfo.streamingReasoning || ""
+        root.finishSessionStream(targetSessionId, replyText, false, streamInfo.toolEvents, replyReasoning)
       } else if (ev.type === "error") {
-        root.finishSessionStream(targetSessionId, ev.error || "Generation error", true, streamInfo.toolEvents)
+        root.finishSessionStream(targetSessionId, ev.error || "Generation error", true, streamInfo.toolEvents, streamInfo.streamingReasoning || "")
       }
     } catch (e) {
       // Partial chunk
     }
   }
 
-  function finishSessionStream(targetSessionId, replyText, isError, toolEvents) {
+  function finishSessionStream(targetSessionId, replyText, isError, toolEvents, reasoning) {
     var streamInfo = root.activeStreams[targetSessionId]
     if (streamInfo && streamInfo.proc) {
       try {
@@ -1038,7 +1061,8 @@ Panel {
       role: "assistant",
       content: isError ? ("⚠️ Error: " + replyText) : replyText,
       timestamp: new Date().toISOString(),
-      tool_events: (toolEvents || []).slice()
+      tool_events: (toolEvents || []).slice(),
+      reasoning: reasoning || null
     })
     cached.messages = msgs
     cached.updated_at = new Date().toISOString()
@@ -1049,6 +1073,7 @@ Panel {
     if (root.selectedSessionId === targetSessionId) {
       root.messages = msgs
       root.currentStreamingContent = ""
+      root.currentStreamingReasoning = ""
       root.currentToolEvents = []
       root.scrollToBottomInstantly()
     }
@@ -1077,6 +1102,7 @@ Panel {
     }
 
     var partialContent = streamInfo.streamingContent || ""
+    var partialReasoning = streamInfo.streamingReasoning || ""
     var tools = streamInfo.toolEvents || []
 
     var updatedActive = Object.assign({}, root.activeStreams)
@@ -1084,14 +1110,15 @@ Panel {
     root.activeStreams = updatedActive
     root.activeStreamCount = Object.keys(updatedActive).length
 
-    if (partialContent) {
+    if (partialContent || partialReasoning) {
       var cached = root.sessionCache[sid] || {}
       var msgs = (cached.messages || []).slice()
       msgs.push({
         role: "assistant",
         content: partialContent,
         timestamp: new Date().toISOString(),
-        tool_events: tools
+        tool_events: tools,
+        reasoning: partialReasoning || null
       })
       cached.messages = msgs
       var updatedCache = Object.assign({}, root.sessionCache)
@@ -1105,6 +1132,7 @@ Panel {
 
     if (root.selectedSessionId === sid) {
       root.currentStreamingContent = ""
+      root.currentStreamingReasoning = ""
       root.currentToolEvents = []
     }
   }
@@ -1769,12 +1797,12 @@ Panel {
         if (proc.errBuf && proc.errBuf.trim()) console.warn("hermes-bridge/stream-chat stderr [" + proc.targetSessionId + "]:", proc.errBuf)
         if (root.isSessionStreaming(proc.targetSessionId)) {
           var streamInfo = root.activeStreams[proc.targetSessionId]
-          var hasContent = streamInfo && streamInfo.streamingContent
+          var hasContent = streamInfo && (streamInfo.streamingContent || streamInfo.streamingReasoning)
           if (exitCode !== 0 && !hasContent) {
             var errText = String(proc.errBuf || "").trim() || "Bridge process error (code " + exitCode + ")"
-            root.finishSessionStream(proc.targetSessionId, errText, true, streamInfo ? streamInfo.toolEvents : [])
+            root.finishSessionStream(proc.targetSessionId, errText, true, streamInfo ? streamInfo.toolEvents : [], streamInfo ? streamInfo.streamingReasoning : "")
           } else if (exitCode !== 0 && hasContent) {
-            root.finishSessionStream(proc.targetSessionId, streamInfo.streamingContent, false, streamInfo.toolEvents)
+            root.finishSessionStream(proc.targetSessionId, streamInfo.streamingContent, false, streamInfo.toolEvents, streamInfo.streamingReasoning)
           }
         }
       }
@@ -2939,6 +2967,84 @@ Panel {
                       anchors.horizontalCenter: parent.horizontalCenter
                       spacing: 4
 
+                      // Persisted reasoning (Thinking) card above assistant bubble
+                      Rectangle {
+                        id: thinkingBox
+                        property bool expanded: false
+                        visible: modelData.role === "assistant" && modelData.reasoning && String(modelData.reasoning).trim() !== ""
+                        Layout.fillWidth: true
+                        radius: 5
+                        color: root.thinkingBadgeBg
+                        border.color: root.thinkingBadgeBorder
+                        clip: true
+                        implicitHeight: expanded ? (thinkingCol.implicitHeight + 14) : 28
+
+                        Behavior on implicitHeight {
+                          NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                        }
+
+                        MouseArea {
+                          anchors.fill: parent
+                          cursorShape: Qt.PointingHandCursor
+                          hoverEnabled: true
+                          onClicked: thinkingBox.expanded = !thinkingBox.expanded
+                        }
+
+                        ColumnLayout {
+                          id: thinkingCol
+                          anchors.fill: parent
+                          anchors.margins: 6
+                          spacing: 4
+
+                          RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Text {
+                              textFormat: Text.PlainText
+                              text: "\uF59C" // Brain
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.thinkingBadgeText
+                            }
+
+                            Text {
+                              textFormat: Text.PlainText
+                              text: {
+                                var r = String(modelData.reasoning || "").replace(/\s+/g, " ").trim()
+                                return "Thinking" + (r ? ": " + r : "")
+                              }
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              font.weight: Font.Medium
+                              color: root.thinkingBadgeText
+                              elide: Text.ElideRight
+                              maximumLineCount: 1
+                              Layout.fillWidth: true
+                            }
+
+                            Text {
+                              textFormat: Text.PlainText
+                              text: thinkingBox.expanded ? "\uF077" : "\uF078"
+                              font.family: root.fontFamily
+                              font.pixelSize: 9
+                              color: root.thinkingBadgeText
+                            }
+                          }
+
+                          Text {
+                            textFormat: Text.PlainText
+                            visible: thinkingBox.expanded
+                            text: modelData.reasoning
+                            font.family: "monospace"
+                            font.pixelSize: 9
+                            color: root.foreground
+                            wrapMode: Text.Wrap
+                            Layout.fillWidth: true
+                          }
+                        }
+                      }
+
                       // Live tool events attached to assistant message
                       Repeater {
                         model: modelData.tool_events || []
@@ -3275,6 +3381,81 @@ Panel {
                       }
                     }
 
+                    // Live thinking card (streams in while reasoning arrives)
+                    Rectangle {
+                      id: liveThinkingBox
+                      property bool expanded: root.liveThinkingExpanded
+                      visible: root.isCurrentSessionStreaming && root.currentStreamingReasoning !== ""
+                      Layout.fillWidth: true
+                      radius: 5
+                      color: root.thinkingBadgeBg
+                      border.color: root.thinkingBadgeBorder
+                      clip: true
+                      implicitHeight: expanded ? (liveThinkingCol.implicitHeight + 14) : 28
+
+                      Behavior on implicitHeight {
+                        NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                      }
+
+                      ColumnLayout {
+                        id: liveThinkingCol
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        RowLayout {
+                          Layout.fillWidth: true
+                          spacing: 6
+
+                          Text {
+                            textFormat: Text.PlainText
+                            text: "\uF59C" // Brain
+                            font.family: root.fontFamily
+                            font.pixelSize: 10
+                            color: root.thinkingBadgeText
+                          }
+
+                          Text {
+                            textFormat: Text.PlainText
+                            text: "Thinking..."
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            color: root.dimText
+                          }
+
+                          Item {
+                            Layout.fillWidth: true
+                          }
+
+                          Text {
+                            textFormat: Text.PlainText
+                            text: "●"
+                            font.family: root.fontFamily
+                            font.pixelSize: 10
+                            color: root.thinkingBadgeText
+
+                            SequentialAnimation on opacity {
+                              running: root.isCurrentSessionStreaming
+                              loops: Animation.Infinite
+                              NumberAnimation { from: 0.2; to: 1.0; duration: 400 }
+                              NumberAnimation { from: 1.0; to: 0.2; duration: 400 }
+                            }
+                          }
+                        }
+
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: liveThinkingBox.expanded
+                          text: String(root.currentStreamingReasoning || "")
+                          font.family: "monospace"
+                          font.pixelSize: 9
+                          color: root.foreground
+                          wrapMode: Text.Wrap
+                          Layout.fillWidth: true
+                        }
+                      }
+                    }
+
                     // Live streaming / thinking message card
                     Rectangle {
                       Layout.alignment: Qt.AlignLeft
@@ -3289,7 +3470,7 @@ Panel {
                         anchors.fill: parent
                         anchors.margins: 8
                         spacing: 8
-                        visible: !root.currentStreamingContent
+                        visible: !root.currentStreamingContent && !root.currentStreamingReasoning
 
                         Text {
   textFormat: Text.PlainText
