@@ -1311,8 +1311,6 @@ Panel {
   function setHideCronSessions(value) {
     root.hideCronSessions = (value === true)
     if (setHideCronProc.running) return
-    setHideCronProc.buf = ""
-    setHideCronProc.errBuf = ""
     setHideCronProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", root.hideCronSessions ? "true" : "false"]
     setHideCronProc.running = true
   }
@@ -1724,21 +1722,9 @@ Panel {
 
   Process {
     id: setHideCronProc
-    property string buf: ""
     property string errBuf: ""
     running: false
     command: ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", "false"]
-    stdout: SplitParser {
-      splitMarker: ""
-      onRead: function(chunk) {
-        if (setHideCronProc.buf.length < 8192) {
-          setHideCronProc.buf += chunk
-        } else {
-          setHideCronProc.signal(15)
-          setHideCronProc.buf = ""
-        }
-      }
-    }
     stderr: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -1748,10 +1734,9 @@ Panel {
       }
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0) {
-        if (setHideCronProc.errBuf && setHideCronProc.errBuf.trim()) console.warn("hermes-bridge/set-hide-cron stderr:", setHideCronProc.errBuf)
+      if (exitCode !== 0 && setHideCronProc.errBuf && setHideCronProc.errBuf.trim()) {
+        console.warn("hermes-bridge/set-hide-cron stderr:", setHideCronProc.errBuf)
       }
-      setHideCronProc.buf = ""
       setHideCronProc.errBuf = ""
     }
   }
@@ -1862,6 +1847,7 @@ Panel {
   Component.onCompleted: {
     triggerRefresh()
     root.refreshTargets()
+    root.loadSettings()
   }
 
   Timer {
@@ -3666,7 +3652,7 @@ Panel {
               }
 
               Text {
-  textFormat: Text.PlainText
+                textFormat: Text.PlainText
                 text: "General"
                 font.family: root.fontFamily
                 font.pixelSize: 12
@@ -3696,7 +3682,7 @@ Panel {
                   spacing: 6
 
                   Text {
-  textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     text: "Hide cron sessions"
                     font.family: root.fontFamily
                     font.pixelSize: 11

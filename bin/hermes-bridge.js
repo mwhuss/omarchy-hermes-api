@@ -1479,9 +1479,7 @@ async function handleSaveSettings(rawInput) {
   let hideCronSessions = data.hideCronSessions === true;
   if (data.hideCronSessions === undefined) {
     const existing = loadSettingsFile();
-    if (existing && existing.hideCronSessions === true) {
-      hideCronSessions = true;
-    }
+    hideCronSessions = !!(existing && existing.hideCronSessions === true);
   }
 
   const cleanSettings = {
