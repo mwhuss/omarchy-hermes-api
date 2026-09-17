@@ -747,6 +747,56 @@ function testUrlGuard() {
   console.log(`  ✔ url-guard allowlist passed (${allowed.length} allowed, ${rejected.length + rejectedHardened.length} rejected)`);
 }
 
+async function testCopyToClipboard() {
+  console.log('Testing: copy-to-clipboard command...');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oha-copy-'));
+
+  // Mock wl-copy that captures stdin to a file and exits 0.
+  const captureFile = path.join(tmpDir, 'captured.txt');
+  const goodBin = path.join(tmpDir, 'wl-copy');
+  fs.writeFileSync(goodBin, `#!/bin/sh\ncat > "${captureFile}"\nexit 0\n`);
+  fs.chmodSync(goodBin, 0o755);
+
+  try {
+    // 1. Success: multi-line stdin preserved, JSON success true.
+    const input = 'hello\nworld\nline three';
+    const res = await runBridge(['copy-to-clipboard'], input, { PATH: tmpDir + path.delimiter + process.env.PATH });
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+    const json = JSON.parse(res.stdout);
+    assert.strictEqual(json.success, true, `Expected success true, got ${JSON.stringify(json)}`);
+    const captured = fs.readFileSync(captureFile, 'utf8');
+    assert.strictEqual(captured, input, `Clipboard content mismatch: ${JSON.stringify(captured)}`);
+    console.log('  ✔ copy-to-clipboard success (multi-line stdin preserved)');
+
+    // 2. Failure: wl-copy exits non-zero -> success false with error.
+    const failDir = path.join(tmpDir, 'failbin');
+    fs.mkdirSync(failDir);
+    const failWl = path.join(failDir, 'wl-copy');
+    fs.writeFileSync(failWl, `#!/bin/sh\ncat > /dev/null\nexit 1\n`);
+    fs.chmodSync(failWl, 0o755);
+    const resFail = await runBridge(['copy-to-clipboard'], 'x', { PATH: failDir + path.delimiter + process.env.PATH });
+    assert.strictEqual(resFail.code, 0, `Exit code should be 0, got ${resFail.code}`);
+    const jsonFail = JSON.parse(resFail.stdout);
+    assert.strictEqual(jsonFail.success, false, `Expected success false, got ${JSON.stringify(jsonFail)}`);
+    assert(typeof jsonFail.error === 'string' && jsonFail.error.length > 0, 'Expected an error message on failure');
+    console.log('  ✔ copy-to-clipboard non-zero exit reports failure');
+
+    // 3. Missing binary: PATH that has node but no wl-copy -> not-found error JSON, no crash.
+    const nodeDir = path.join(tmpDir, 'nodebin');
+    fs.mkdirSync(nodeDir);
+    const nodeReal = fs.realpathSync(process.execPath);
+    fs.symlinkSync(nodeReal, path.join(nodeDir, 'node'));
+    const resMissing = await runBridge(['copy-to-clipboard'], 'x', { PATH: nodeDir });
+    assert.strictEqual(resMissing.code, 0, `Exit code should be 0, got ${resMissing.code}`);
+    const jsonMissing = JSON.parse(resMissing.stdout);
+    assert.strictEqual(jsonMissing.success, false, `Expected success false, got ${JSON.stringify(jsonMissing)}`);
+    assert(/not found/i.test(jsonMissing.error || ''), `Expected not-found error, got ${JSON.stringify(jsonMissing)}`);
+    console.log('  ✔ copy-to-clipboard missing binary reports not-found');
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -785,6 +835,7 @@ async function runAllTests() {
     await testConcurrentStreams();
     await testStreamChatNotify();
     await testDeleteCreatedSessions();
+    await testCopyToClipboard();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
     console.log('====================================\n');

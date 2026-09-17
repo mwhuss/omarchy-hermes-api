@@ -19,6 +19,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const readline = require('readline');
+const { spawn } = require('child_process');
 const { URL } = require('url');
 
 const MAX_SETTINGS_BYTES = 65536;
@@ -88,6 +89,21 @@ async function readStdinLineOrEof(maxBytes = 262144) {
     return line.slice(0, maxBytes);
   }
   return '';
+}
+
+async function readStdinAll(maxBytes = 1048576) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of process.stdin) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    if (total + buf.length > maxBytes) {
+      process.stdin.destroy();
+      break;
+    }
+    total += buf.length;
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function ensurePrivateDir(dirPath) {
@@ -1492,6 +1508,30 @@ async function handleSaveSettings(rawInput) {
   }
 }
 
+async function handleCopyToClipboard() {
+  const text = await readStdinAll(1048576);
+  const result = await new Promise((resolve) => {
+    const child = spawn('wl-copy');
+    let settled = false;
+    const finish = (ok, error) => {
+      if (!settled) {
+        settled = true;
+        resolve(ok ? { success: true } : { success: false, error });
+      }
+    };
+    child.on('error', (err) => {
+      finish(false, err && err.code === 'ENOENT' ? 'wl-copy not found' : `wl-copy failed: ${err.message}`);
+    });
+    child.on('exit', (code) => {
+      finish(code === 0, code === 0 ? null : `wl-copy exited with code ${code}`);
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.write(text);
+    child.stdin.end();
+  });
+  console.log(JSON.stringify(result));
+}
+
 function parseCliOptions(args) {
   let endpoint = null, profile = null;
   const rest = [];
@@ -1549,6 +1589,10 @@ async function main() {
       await handleSaveSettings(rest[1]);
       break;
 
+    case 'copy-to-clipboard':
+      await handleCopyToClipboard();
+      break;
+
     case 'stream-chat': {
       let sessionId = null;
       let prompt = '';
@@ -1599,7 +1643,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, copy-to-clipboard`
       }));
       process.exit(1);
   }
