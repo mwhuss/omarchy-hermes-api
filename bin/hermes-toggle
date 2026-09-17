@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Toggle (or open/close) the Omarchy Hermes API flyout via Quickshell IPC.
+# Usage: hermes-toggle [toggle|open|close]   (default: toggle)
+set -euo pipefail
+
+IPC_TARGET="com.mwhuss.omarchy-hermes-api"
+SHELL_PROJECT="${OMARCHY_SHELL_PROJECT:-/usr/share/omarchy/shell}"
+
+verb="${1:-toggle}"
+case "$verb" in
+  toggle|open|close) ;;
+  *) echo "usage: hermes-toggle [toggle|open|close]" >&2; exit 1 ;;
+esac
+
+if ! command -v quickshell >/dev/null 2>&1; then
+  echo "hermes-toggle: 'quickshell' CLI not found on PATH" >&2
+  exit 1
+fi
+
+quickshell -p "$SHELL_PROJECT" ipc call "$IPC_TARGET" "$verb"

@@ -36,6 +36,7 @@ ln -s "$SRC_DIR" "$TARGET_DIR"
 
 echo "==> Ensuring bridge script is executable..."
 chmod +x "$SRC_DIR/bin/hermes-bridge.js"
+chmod +x "$SRC_DIR/bin/hermes-toggle"
 
 echo "==> Plugin installation complete!"
 echo "You can now add '$PLUGIN_ID' to your bar widgets in ~/.config/omarchy/shell.json or restart Omarchy shell."
