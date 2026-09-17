@@ -275,6 +275,7 @@ Panel {
   property string currentModel: "hermes-agent"
   property string searchQuery: ""
   property bool omarchyOnly: false
+  property bool hideCronSessions: false
   property bool hasSelectedInitialSession: false
 
   // Active chat state
@@ -1113,6 +1114,9 @@ Panel {
       if (omarchyOnly && s.source !== "omarchy-bar" && s.source !== "api-server") {
         continue
       }
+      if (hideCronSessions && s.source === "cron") {
+        continue
+      }
       if (filterEp && filterEp !== "all") {
         if (s.endpoint_id && s.endpoint_id !== filterEp) continue
         if (filterProf && s.profile_name && s.profile_name !== filterProf) continue
@@ -1126,11 +1130,27 @@ Panel {
       out.push(s)
     }
     filteredSessions = out
+
+    // If the active session was hidden by the filter, move selection to the first visible session
+    if (root.selectedSessionId) {
+      var stillVisible = false
+      for (var j = 0; j < out.length; j++) {
+        if (out[j].id === root.selectedSessionId) { stillVisible = true; break }
+      }
+      if (!stillVisible) {
+        if (out.length > 0) {
+          root.selectSession(out[0].id)
+        } else {
+          root.selectedSessionId = ""
+        }
+      }
+    }
   }
 
   onSessionsChanged: updateFilteredSessions()
   onSearchQueryChanged: updateFilteredSessions()
   onOmarchyOnlyChanged: updateFilteredSessions()
+  onHideCronSessionsChanged: updateFilteredSessions()
   onActiveTargetChanged: updateFilteredSessions()
 
   function formatTime(isoStr) {
@@ -1288,6 +1308,15 @@ Panel {
     getSettingsProc.running = true
   }
 
+  function setHideCronSessions(value) {
+    root.hideCronSessions = (value === true)
+    if (setHideCronProc.running) return
+    setHideCronProc.buf = ""
+    setHideCronProc.errBuf = ""
+    setHideCronProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", root.hideCronSessions ? "true" : "false"]
+    setHideCronProc.running = true
+  }
+
   function cloneSettings(obj) {
     return JSON.parse(JSON.stringify(obj))
   }
@@ -1302,6 +1331,7 @@ Panel {
         if (root.selectedEndpointIndex >= eps.length) {
           root.selectedEndpointIndex = Math.max(0, eps.length - 1)
         }
+        root.hideCronSessions = (data.settings.hideCronSessions === true)
       }
     } catch (e) {
       console.warn("hermes-bridge/get-settings parse error:", e)
@@ -1693,6 +1723,40 @@ Panel {
   }
 
   Process {
+    id: setHideCronProc
+    property string buf: ""
+    property string errBuf: ""
+    running: false
+    command: ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", "false"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (setHideCronProc.buf.length < 8192) {
+          setHideCronProc.buf += chunk
+        } else {
+          setHideCronProc.signal(15)
+          setHideCronProc.buf = ""
+        }
+      }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (setHideCronProc.errBuf.length < 8192) {
+          setHideCronProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        if (setHideCronProc.errBuf && setHideCronProc.errBuf.trim()) console.warn("hermes-bridge/set-hide-cron stderr:", setHideCronProc.errBuf)
+      }
+      setHideCronProc.buf = ""
+      setHideCronProc.errBuf = ""
+    }
+  }
+
+  Process {
     id: listTargetsProc
     property string buf: ""
     property string errBuf: ""
@@ -1782,6 +1846,7 @@ Panel {
     if (renameSessionProc.running) renameSessionProc.signal(15)
     if (getSettingsProc.running) getSettingsProc.signal(15)
     if (saveSettingsProc.running) saveSettingsProc.signal(15)
+    if (setHideCronProc.running) setHideCronProc.signal(15)
     if (listTargetsProc.running) listTargetsProc.signal(15)
     if (setActiveTargetProc.running) setActiveTargetProc.signal(15)
     if (root.activeStreams) {
@@ -3588,6 +3653,73 @@ Panel {
                       font.pixelSize: 11
                       color: root.dimText
                       horizontalAlignment: Text.AlignHCenter
+                    }
+                  }
+                }
+              }
+
+              // -------------------- General: session list preferences
+              Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+              }
+
+              Text {
+  textFormat: Text.PlainText
+                text: "General"
+                font.family: root.fontFamily
+                font.pixelSize: 12
+                font.weight: Font.Bold
+                color: root.foreground
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                height: 36
+                radius: 6
+                color: hideCronHover.containsMouse ? root.cardHover : root.cardBg
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+                MouseArea {
+                  id: hideCronHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.setHideCronSessions(!root.hideCronSessions)
+                }
+
+                RowLayout {
+                  anchors.fill: parent
+                  anchors.leftMargin: 8
+                  anchors.rightMargin: 8
+                  spacing: 6
+
+                  Text {
+  textFormat: Text.PlainText
+                    text: "Hide cron sessions"
+                    font.family: root.fontFamily
+                    font.pixelSize: 11
+                    color: root.foreground
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                  }
+
+                  // Switch
+                  Rectangle {
+                    width: 30
+                    height: 16
+                    radius: 8
+                    color: root.hideCronSessions ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+
+                    Rectangle {
+                      width: 12
+                      height: 12
+                      radius: 6
+                      color: "#FFFFFF"
+                      anchors.verticalCenter: parent.verticalCenter
+                      x: root.hideCronSessions ? 16 : 2
+                      Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutQuad } }
                     }
                   }
                 }

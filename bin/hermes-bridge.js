@@ -1272,6 +1272,7 @@ async function handleGetSettings() {
           seeded: false,
           settings: {
             activeTarget: data.activeTarget || { endpointId: 'all', profileName: 'all' },
+            hideCronSessions: data.hideCronSessions === true,
             endpoints: data.endpoints
           }
         }));
@@ -1291,6 +1292,7 @@ async function handleGetSettings() {
 
   const seededSettings = {
     activeTarget: { endpointId: 'all', profileName: 'all' },
+    hideCronSessions: false,
     endpoints: [
       {
         id: 'endpoint-default',
@@ -1472,8 +1474,19 @@ async function handleSaveSettings(rawInput) {
     }
   }
 
+  // Preserve the hideCronSessions preference when the payload omits it
+  // (the endpoint Save button only sends { endpoints })
+  let hideCronSessions = data.hideCronSessions === true;
+  if (data.hideCronSessions === undefined) {
+    const existing = loadSettingsFile();
+    if (existing && existing.hideCronSessions === true) {
+      hideCronSessions = true;
+    }
+  }
+
   const cleanSettings = {
     activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
+    hideCronSessions,
     endpoints: validatedEndpoints
   };
 
@@ -1488,6 +1501,24 @@ async function handleSaveSettings(rawInput) {
     console.log(JSON.stringify({
       success: false,
       error: `Failed to write settings file: ${err.message}`
+    }));
+  }
+}
+
+async function handleSetHideCron(value) {
+  const hide = value === 'true';
+  const settings = loadSettingsFile() || { endpoints: [] };
+  settings.hideCronSessions = hide;
+  try {
+    writeAtomicSettings(settings);
+    console.log(JSON.stringify({
+      success: true,
+      hideCronSessions: hide
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to save hideCronSessions: ${err.message}`
     }));
   }
 }
@@ -1549,6 +1580,10 @@ async function main() {
       await handleSaveSettings(rest[1]);
       break;
 
+    case 'set-hide-cron':
+      await handleSetHideCron(rest[1]);
+      break;
+
     case 'stream-chat': {
       let sessionId = null;
       let prompt = '';
@@ -1599,7 +1634,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron`
       }));
       process.exit(1);
   }
