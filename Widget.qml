@@ -544,6 +544,7 @@ Panel {
         // Add server sessions
         for (var s = 0; s < serverList.length; s++) {
           var sItem = Object.assign({}, serverList[s])
+          if (sItem.title && !sItem.title.startsWith("Session api-")) sItem.title = root.collapseToSingleLine(sItem.title)
           if (root.sessionCache[sItem.id]) {
             var c = root.sessionCache[sItem.id]
             if (c.title && !c.title.startsWith("Session api-")) sItem.title = c.title
@@ -653,7 +654,7 @@ Panel {
         if (!root.isSessionStreaming(sid)) {
           cached.messages = serverMsgs
           if (res.session.title && !res.session.title.startsWith("Session api-")) {
-            cached.title = res.session.title
+            cached.title = root.collapseToSingleLine(res.session.title)
           }
           var updatedCache = Object.assign({}, root.sessionCache)
           updatedCache[sid] = cached
@@ -664,7 +665,7 @@ Panel {
             if (oldMsgs.length !== serverMsgs.length || JSON.stringify(oldMsgs) !== JSON.stringify(serverMsgs)) {
               root.messages = serverMsgs
               if (res.session.title && !res.session.title.startsWith("Session api-")) {
-                root.activeSessionTitle = res.session.title
+                root.activeSessionTitle = root.collapseToSingleLine(res.session.title)
               }
               if (root.isNearBottom) {
                 root.scrollToBottomInstantly()
@@ -678,8 +679,17 @@ Panel {
     }
   }
 
+  function collapseToSingleLine(raw) {
+    return String(raw || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim()
+  }
+
+  function sanitizeSessionTitle(raw) {
+    var t = root.collapseToSingleLine(raw)
+    return t.length > 32 ? (t.slice(0, 32) + "...") : t
+  }
+
   function saveSessionTitle(newTitle) {
-    var trimmed = String(newTitle || "").trim()
+    var trimmed = root.collapseToSingleLine(newTitle)
     if (!trimmed || !selectedSessionId) {
       isEditingTitle = false
       return
@@ -813,7 +823,7 @@ Panel {
     } else {
       var displayTitle = title
       if (!displayTitle || displayTitle === "New Session" || displayTitle.startsWith("Session api-")) {
-        displayTitle = lastMessage ? (lastMessage.length > 32 ? (lastMessage.slice(0, 32) + "...") : lastMessage) : "New Session"
+        displayTitle = lastMessage ? root.sanitizeSessionTitle(lastMessage) : "New Session"
       }
       item = {
         id: sessionId,
@@ -881,7 +891,7 @@ Panel {
         targetSessionId = "api-" + timestamp + "-" + rand
       }
       root.selectedSessionId = targetSessionId
-      root.activeSessionTitle = text.length > 32 ? (text.slice(0, 32) + "...") : text
+      root.activeSessionTitle = root.sanitizeSessionTitle(text)
     }
 
     root.promptDraft = ""
@@ -2339,6 +2349,7 @@ Panel {
                         font.weight: Font.Medium
                         color: root.foreground
                         elide: Text.ElideRight
+                        maximumLineCount: 1
                         Layout.fillWidth: true
                       }
 
@@ -2454,6 +2465,7 @@ Panel {
                       font.weight: Font.Medium
                       color: root.foreground
                       elide: Text.ElideRight
+                      maximumLineCount: 1
                       Layout.fillWidth: true
                     }
 
