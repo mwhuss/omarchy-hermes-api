@@ -1283,6 +1283,14 @@ async function handleGetSettings() {
     }
   }
 
+  console.log(JSON.stringify({
+    success: true,
+    seeded: true,
+    settings: buildSeededSettings()
+  }));
+}
+
+function buildSeededSettings() {
   // Seed default settings from active environment / ~/.hermes/.env
   const hermesEnv = loadHermesEnvFile();
   const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
@@ -1290,7 +1298,7 @@ async function handleGetSettings() {
   const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
   const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
 
-  const seededSettings = {
+  return {
     activeTarget: { endpointId: 'all', profileName: 'all' },
     hideCronSessions: false,
     endpoints: [
@@ -1304,12 +1312,6 @@ async function handleGetSettings() {
       }
     ]
   };
-
-  console.log(JSON.stringify({
-    success: true,
-    seeded: true,
-    settings: seededSettings
-  }));
 }
 
 async function handleSaveSettings(rawInput) {
@@ -1505,7 +1507,25 @@ async function handleSaveSettings(rawInput) {
 
 async function handleSetHideCron(value) {
   const hide = value === 'true';
-  const settings = loadSettingsFile() || { endpoints: [] };
+  const settingsPath = getSettingsPath();
+  let settings;
+  if (fs.existsSync(settingsPath)) {
+    settings = loadSettingsFile();
+    if (!settings) {
+      // Fail closed: the file exists but is unreadable or invalid.
+      // Never overwrite it with a fresh object — that would wipe the
+      // user's endpoints (or a file they are mid-repair on).
+      console.log(JSON.stringify({
+        success: false,
+        error: 'Settings file is invalid; fix or remove it before changing this preference'
+      }));
+      return;
+    }
+  } else {
+    // No settings file yet: seed the same defaults get-settings would
+    // return, so the first toggle doesn't require a manual save first.
+    settings = buildSeededSettings();
+  }
   settings.hideCronSessions = hide;
   try {
     writeAtomicSettings(settings);

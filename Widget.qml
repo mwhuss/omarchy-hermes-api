@@ -1309,8 +1309,11 @@ Panel {
   }
 
   function setHideCronSessions(value) {
-    root.hideCronSessions = (value === true)
     if (setHideCronProc.running) return
+    root.hideCronSessions = (value === true)
+    setHideCronProc.buf = ""
+    setHideCronProc.errBuf = ""
+    setHideCronProc.desiredValue = (value === true)
     setHideCronProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", root.hideCronSessions ? "true" : "false"]
     setHideCronProc.running = true
   }
@@ -1722,9 +1725,19 @@ Panel {
 
   Process {
     id: setHideCronProc
+    property string buf: ""
     property string errBuf: ""
+    property bool desiredValue: false
     running: false
     command: ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", "false"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (setHideCronProc.buf.length < 8192) {
+          setHideCronProc.buf += chunk
+        }
+      }
+    }
     stderr: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -1734,9 +1747,32 @@ Panel {
       }
     }
     onExited: function(exitCode) {
-      if (exitCode !== 0 && setHideCronProc.errBuf && setHideCronProc.errBuf.trim()) {
+      var failed = false
+      var errMsg = ""
+      if (setHideCronProc.buf) {
+        try {
+          var data = JSON.parse(setHideCronProc.buf)
+          if (data && data.success === false) {
+            failed = true
+            errMsg = (typeof data.error === "string" && data.error) ? data.error : "Failed to save hideCronSessions"
+          }
+        } catch (e) {
+          failed = true
+          errMsg = "Error parsing set-hide-cron response"
+        }
+      }
+      if (!failed && exitCode !== 0) {
+        failed = true
+        errMsg = "Failed to save hideCronSessions (code " + exitCode + ")"
+      }
+      if (failed) {
+        root.hideCronSessions = !setHideCronProc.desiredValue
+        root.settingsErrorMessage = errMsg
+        console.warn("hermes-bridge/set-hide-cron failed:", errMsg)
+      } else if (exitCode !== 0 && setHideCronProc.errBuf && setHideCronProc.errBuf.trim()) {
         console.warn("hermes-bridge/set-hide-cron stderr:", setHideCronProc.errBuf)
       }
+      setHideCronProc.buf = ""
       setHideCronProc.errBuf = ""
     }
   }
