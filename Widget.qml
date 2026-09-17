@@ -3335,8 +3335,14 @@ Panel {
             // ------------------------- Bottom Prompt Input Area
             Rectangle {
               Layout.fillWidth: true
-              height: 52
+              height: Math.min(120, Math.max(52, promptInput.implicitHeight + 16))
               color: root.cardBg
+
+              onHeightChanged: {
+                if (height > 52 && root.isNearBottom) {
+                  root.scrollToBottomInstantly()
+                }
+              }
 
               RowLayout {
                 anchors.fill: parent
@@ -3350,27 +3356,41 @@ Panel {
                   color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
                   border.color: promptInput.activeFocus ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
-                  TextInput {
+                  TextArea {
                     id: promptInput
                     anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    verticalAlignment: TextInput.AlignVCenter
+                    leftPadding: 10
+                    rightPadding: 10
+                    topPadding: 8
+                    bottomPadding: 8
+                    maximumLength: 32768
+                    wrapMode: TextArea.Wrap
+                    verticalAlignment: TextArea.AlignTop
                     font.family: root.fontFamily
                     font.pixelSize: 11
                     color: root.foreground
                     clip: true
                     focus: true
-                    onAccepted: root.sendCurrentMessage()
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     Keys.onPressed: function(event) {
-                      if (event.key === Qt.Key_Up) {
-                        if (root.navigatePromptHistory(true)) {
+                      if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                        // Shift+Enter: not accepted, so TextArea inserts the newline
+                        if (!(event.modifiers & Qt.ShiftModifier)) {
+                          root.sendCurrentMessage()
                           event.accepted = true
                         }
+                      } else if (event.key === Qt.Key_Up) {
+                        if (promptInput.lineNumber === 0) {
+                          if (root.navigatePromptHistory(true)) {
+                            event.accepted = true
+                          }
+                        }
                       } else if (event.key === Qt.Key_Down) {
-                        if (root.navigatePromptHistory(false)) {
-                          event.accepted = true
+                        if (promptInput.lineNumber === promptInput.lineCount - 1) {
+                          if (root.navigatePromptHistory(false)) {
+                            event.accepted = true
+                          }
                         }
                       } else if (event.key === Qt.Key_Escape) {
                         if (root.isConfirmingDeleteSession) {
@@ -3385,9 +3405,11 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      anchors.top: parent.top
+                      anchors.topMargin: 8
                       anchors.left: parent.left
+                      anchors.leftMargin: 10
                       text: "Ask " + root.serverName + " a question or assign a task..."
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -3399,6 +3421,7 @@ Panel {
 
                 // Send or Stop button
                 Rectangle {
+                  Layout.alignment: Qt.AlignTop
                   width: 34
                   height: 34
                   radius: 6
