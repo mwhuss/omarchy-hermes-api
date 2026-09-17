@@ -36,6 +36,14 @@ _Avoid_: Title bar, top bar, chat header
 The sidebar navigation area presenting selectable Hermes Sessions with their status indicators.
 _Avoid_: Session drawer, thread list, history sidebar
 
+**Cron Session**:
+A Hermes Session created by a scheduled (cron) job on the Hermes server, identified by `source === "cron"`.
+_Avoid_: scheduled chat, automated thread, background session
+
+**Session Filter**:
+A user preference that excludes a class of Hermes Sessions (e.g. cron sessions) from the Session List, persisted in the Endpoint Configuration File.
+_Avoid_: session sort, list view, hide mode
+
 **Server Name**:
 The configured display identity for the Hermes Agent instance (defaulting to "Hermes"), resolved via `HERMES_API_SERVER_NAME` in the environment or `~/.hermes/.env`. Displayed across the flyout header, conversational greetings, and desktop notifications.
 _Avoid_: Agent title, bot alias, profile tag
