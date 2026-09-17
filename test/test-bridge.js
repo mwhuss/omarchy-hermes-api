@@ -25,6 +25,14 @@ function resetMockSessions() {
     updated_at: new Date().toISOString(),
     message_count: 2
   });
+  mockSessions.set('cron_test-job-1_1700000000', {
+    id: 'cron_test-job-1_1700000000',
+    title: 'Scheduled Repo Check',
+    source: 'cron',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 1
+  });
 }
 
 function startMockServer() {
@@ -479,6 +487,76 @@ async function testSettings() {
     assert.strictEqual(emptyArrayJson.success, false, 'empty endpoints array should fail');
 
     console.log('  ✔ save-settings validation properly rejects invalid inputs');
+
+    console.log('Testing: hideCronSessions preference (get-settings default)...');
+    // Normalize state: the default assertion must not depend on a pre-existing user preference
+    await runBridge(['set-hide-cron', 'false']);
+    const getHideRes = await runBridge(['get-settings']);
+    const getHideJson = JSON.parse(getHideRes.stdout);
+    assert.strictEqual(getHideJson.success, true, 'get-settings should succeed');
+    assert.strictEqual(getHideJson.settings.hideCronSessions, false, 'hideCronSessions should default to false when absent');
+    console.log('  ✔ hideCronSessions defaults to false');
+
+    console.log('Testing: set-hide-cron command...');
+    const setHideRes = await runBridge(['set-hide-cron', 'true']);
+    assert.strictEqual(setHideRes.code, 0, `set-hide-cron exit code should be 0, got ${setHideRes.code}`);
+    const setHideJson = JSON.parse(setHideRes.stdout);
+    assert.strictEqual(setHideJson.success, true, 'set-hide-cron should succeed');
+    assert.strictEqual(setHideJson.hideCronSessions, true, 'set-hide-cron should report hideCronSessions true');
+
+    const stat2 = fs.statSync(settingsPath);
+    assert.strictEqual(stat2.mode & 0o777, 0o600, 'set-hide-cron must preserve 0600 file permissions');
+
+    const getHide2Res = await runBridge(['get-settings']);
+    const getHide2Json = JSON.parse(getHide2Res.stdout);
+    assert.strictEqual(getHide2Json.settings.hideCronSessions, true, 'get-settings should reflect set-hide-cron true');
+    console.log('  ✔ set-hide-cron true round-trips with 0600 permissions');
+
+    console.log('Testing: save-settings round-trips hideCronSessions...');
+    const saveHideRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 8642 }],
+      hideCronSessions: true
+    })]);
+    const saveHideJson = JSON.parse(saveHideRes.stdout);
+    assert.strictEqual(saveHideJson.success, true, 'save-settings with hideCronSessions should succeed');
+    assert.strictEqual(saveHideJson.settings.hideCronSessions, true, 'save-settings should echo hideCronSessions true');
+    const savedHide = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.strictEqual(savedHide.hideCronSessions, true, 'hideCronSessions must be persisted to disk by save-settings');
+    console.log('  ✔ save-settings round-trips hideCronSessions');
+
+    console.log('Testing: save-settings preserves hideCronSessions when omitted...');
+    const saveOmitRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 8642 }]
+    })]);
+    const saveOmitJson = JSON.parse(saveOmitRes.stdout);
+    assert.strictEqual(saveOmitJson.success, true, 'save-settings without hideCronSessions should succeed');
+    assert.strictEqual(saveOmitJson.settings.hideCronSessions, true, 'save-settings must preserve existing hideCronSessions when omitted');
+    const savedOmit = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.strictEqual(savedOmit.hideCronSessions, true, 'hideCronSessions must survive a save-settings that omits it');
+    console.log('  ✔ save-settings preserves hideCronSessions when omitted');
+
+    console.log('Testing: set-hide-cron fails closed on an invalid settings file...');
+    const invalidContent = '{ not valid json';
+    fs.writeFileSync(settingsPath, invalidContent, { mode: 0o600 });
+    const badHideRes = await runBridge(['set-hide-cron', 'true']);
+    const badHideJson = JSON.parse(badHideRes.stdout);
+    assert.strictEqual(badHideJson.success, false, 'set-hide-cron must fail when the settings file is invalid');
+    assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), invalidContent, 'set-hide-cron must not overwrite an invalid settings file');
+    console.log('  ✔ set-hide-cron fails closed and leaves the invalid file untouched');
+
+    console.log('Testing: set-hide-cron seeds defaults when no settings file exists...');
+    fs.unlinkSync(settingsPath);
+    const seedHideRes = await runBridge(['set-hide-cron', 'true'], null, { HERMES_API_SERVER_KEY: 'seed-test-key' });
+    const seedHideJson = JSON.parse(seedHideRes.stdout);
+    assert.strictEqual(seedHideJson.success, true, 'set-hide-cron should succeed on a fresh install by seeding defaults');
+    assert.strictEqual(seedHideJson.hideCronSessions, true, 'set-hide-cron should report hideCronSessions true');
+    const seededData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert(Array.isArray(seededData.endpoints) && seededData.endpoints.length > 0, 'seeded settings must include the default endpoint');
+    assert.strictEqual(seededData.hideCronSessions, true, 'seeded settings must persist hideCronSessions');
+    console.log('  ✔ set-hide-cron seeds defaults on a fresh install');
+
+    // Reset the preference so the finally-restore leaves a clean state
+    await runBridge(['set-hide-cron', 'false']);
   } finally {
     if (initialContent !== null) {
       fs.writeFileSync(settingsPath, initialContent, { mode: 0o600 });
