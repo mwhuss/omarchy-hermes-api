@@ -772,11 +772,7 @@ Panel {
     root.sessionCache = updatedCache
 
     if (selectedSessionId === sessionId) {
-      if (remaining.length > 0) {
-        root.selectSession(remaining[0].id)
-      } else {
-        root.startNewSession()
-      }
+      root.startNewSession()
     }
     deleteSessionProc.buf = ""
     deleteSessionProc.errBuf = ""
