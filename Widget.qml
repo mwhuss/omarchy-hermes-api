@@ -1822,6 +1822,7 @@ Panel {
         if (exitCode !== 0) {
           root.setCopyFeedback(copyProc.feedbackKey, false)
         }
+        copyProc.destroy()
       }
     }
   }
@@ -1835,7 +1836,6 @@ Panel {
       width: 16
       height: 16
       radius: 3
-      color: copyBtnMa.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12) : "transparent"
 
       Text {
         anchors.centerIn: parent
@@ -1859,7 +1859,6 @@ Panel {
       MouseArea {
         id: copyBtnMa
         anchors.fill: parent
-        hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
         onClicked: root.copyToClipboard(copyKey, copyText)
       }
@@ -3140,7 +3139,7 @@ Panel {
                             active: toolCallBox.hovered
                             sourceComponent: copyButtonComponent
                             onLoaded: {
-                              item.copyKey = "call-" + index
+                              item.copyKey = "call-" + (modelData.id || index)
                               item.copyText = String(modelData.summary || "")
                             }
                           }
