@@ -25,6 +25,10 @@ const MAX_SETTINGS_BYTES = 65536;
 const MAX_ENV_BYTES = 32768;
 const MAX_STREAM_CHARS = 262144;
 const MAX_FETCH_BYTES = 1048576;
+// SSE lines are small (a single data: chunk); the idle timer resets on every
+// chunk, so a single huge line with no newline would grow lineBuffer without
+// bound. Cap the pending line before it is processed.
+const MAX_SSE_LINE_CHARS = 1048576;
 
 function isLoopbackHost(hostname) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
@@ -124,14 +128,25 @@ function writeAtomicSettings(settingsData) {
 
 async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeoutMs = 10000) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // Total timeout: stays armed from request start through full body
+  // consumption. Cleared only via res.boundedRelease() once the body has
+  // been read (or intentionally abandoned).
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`Request timed out after ${timeoutMs} ms`));
+  }, timeoutMs);
+  let released = false;
   try {
     const res = await fetch(url, {
       ...options,
       signal: controller.signal,
       redirect: 'manual'
     });
-    clearTimeout(timer);
+    res.boundedRelease = () => {
+      if (!released) {
+        released = true;
+        clearTimeout(timer);
+      }
+    };
     return res;
   } catch (err) {
     clearTimeout(timer);
@@ -139,8 +154,63 @@ async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeo
   }
 }
 
-async function readBoundedJson(res) {
-  return (res && typeof res.json === 'function') ? await res.json() : {};
+async function readBoundedBody(res, maxBytes) {
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf8', { fatal: false });
+  let total = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new Error(`Response body exceeds ${maxBytes} byte limit`);
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    try { await reader.cancel(); } catch (e) {}
+    res.boundedRelease?.();
+  }
+}
+
+async function readBoundedText(res, maxBytes = 32768) {
+  if (!res || !res.body) {
+    res?.boundedRelease?.();
+    return '';
+  }
+  return await readBoundedBody(res, maxBytes);
+}
+
+async function readBoundedJson(res, maxBytes = MAX_FETCH_BYTES) {
+  if (!res || typeof res.json !== 'function') {
+    res?.boundedRelease?.();
+    return {};
+  }
+  const cl = res.headers.get('content-length');
+  if (cl !== null) {
+    if (!/^\d+$/.test(cl)) {
+      res.boundedRelease?.();
+      throw new Error('Invalid Content-Length header');
+    }
+    if (Number(cl) > maxBytes) {
+      res.boundedRelease?.();
+      throw new Error(`Content-Length ${cl} exceeds ${maxBytes} byte limit`);
+    }
+  }
+  if (!res.body) {
+    res.boundedRelease?.();
+    return {};
+  }
+  const text = await readBoundedBody(res, maxBytes);
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error('Invalid JSON in response body');
+  }
 }
 
 function loadHermesEnvFile() {
@@ -437,6 +507,7 @@ async function handleStatus(targetEndpointId, targetProfileName) {
         serverName: cfg.serverName
       }));
     } else {
+      res.boundedRelease();
       console.log(JSON.stringify({
         success: false,
         connected: false,
@@ -470,10 +541,14 @@ async function fetchSessionsForConfig(cfg) {
     let res = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions`, { headers }, 1048576, 10000);
 
     if (!res.ok) {
+      res.boundedRelease();
       res = await boundedFetch(`${cfg.baseUrl}/sessions`, { headers }, 1048576, 10000);
     }
 
-    if (!res.ok) return [];
+    if (!res.ok) {
+      res.boundedRelease();
+      return [];
+    }
 
     const raw = await readBoundedJson(res, 1048576);
     const list = Array.isArray(raw) ? raw : (Array.isArray(raw.sessions) ? raw.sessions : (Array.isArray(raw.data) ? raw.data : []));
@@ -636,10 +711,13 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       const data = await readBoundedJson(sessionRes, 1048576);
       sessionObj = data.session || data || {};
     } else {
+      sessionRes.boundedRelease();
       sessionRes = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, { headers }, 1048576, 10000);
       if (sessionRes.ok) {
         const data = await readBoundedJson(sessionRes, 1048576);
         sessionObj = data.session || data || {};
+      } else {
+        sessionRes.boundedRelease();
       }
     }
 
@@ -647,6 +725,7 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
     let msgRes = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}/messages`, { headers }, 1048576, 10000);
 
     if (!msgRes.ok) {
+      msgRes.boundedRelease();
       msgRes = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}/messages`, { headers }, 1048576, 10000);
     }
 
@@ -655,6 +734,7 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       const msgData = await readBoundedJson(msgRes, 1048576);
       rawMessages = Array.isArray(msgData.data) ? msgData.data : (Array.isArray(msgData.messages) ? msgData.messages : (Array.isArray(msgData) ? msgData : []));
     } else {
+      msgRes.boundedRelease();
       rawMessages = sessionObj.messages || [];
     }
 
@@ -760,11 +840,18 @@ async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
     }, 65536, 10000);
 
     if (!res.ok && res.status !== 404) {
+      res.boundedRelease();
+      try { await res.body?.cancel(); } catch (e) {}
       res = await boundedFetch(`${cfg.baseUrl}/sessions/${encodeURIComponent(rawSessionId)}`, {
         method: 'DELETE',
         headers
       }, 65536, 10000);
     }
+
+    // Body is intentionally not read — release the armed timeout and drop
+    // the socket so the process can exit promptly.
+    res.boundedRelease();
+    try { await res.body?.cancel(); } catch (e) {}
 
     const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
@@ -914,7 +1001,7 @@ async function handleStreamChat(options) {
         errDetail = errJson.error?.message || errJson.message || JSON.stringify(errJson);
       } catch (e) {
         try {
-          const errText = await res.text();
+          const errText = await readBoundedText(res, 32768);
           errDetail = errText.slice(0, 512);
         } catch (_) {}
       }
@@ -1028,6 +1115,9 @@ async function handleStreamChat(options) {
         resetIdleTimer();
 
         lineBuffer += decoder.decode(value, { stream: true });
+        if (lineBuffer.length > MAX_SSE_LINE_CHARS) {
+          throw new Error(`SSE line exceeds ${MAX_SSE_LINE_CHARS} character limit`);
+        }
         const lines = lineBuffer.split(/\r?\n/);
         lineBuffer = lines.pop();
 
@@ -1104,6 +1194,7 @@ async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile)
     }, 65536, 10000);
 
     if (!res.ok) {
+      res.boundedRelease();
       console.log(JSON.stringify({ success: false, error: `Failed to rename session: ${res.status}` }));
       return;
     }
@@ -1156,6 +1247,8 @@ async function handleListTargets() {
         if (Array.isArray(data.data) && data.data.length > 0) {
           models = data.data.map(m => m.id);
         }
+      } else {
+        res.boundedRelease();
       }
     } catch (e) {
       connected = false;
@@ -1615,6 +1708,9 @@ if (require.main === module) {
 module.exports = {
   parseCliOptions,
   getAgentMonogram,
-  getAgentColor
+  getAgentColor,
+  boundedFetch,
+  readBoundedJson,
+  readBoundedText
 };
 

@@ -633,6 +633,229 @@ async function testMockSseStreamWithCustomEvents() {
   }
 }
 
+function startTestServer(handler) {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer(handler);
+    server.listen(0, '127.0.0.1', () => resolve(server));
+    server.on('error', reject);
+  });
+}
+
+// Raw-socket server for responses with lying/invalid Content-Length headers.
+// Node's http server buffers headers until the body is written, so it cannot
+// simulate a server that declares a size it never sends.
+function startRawServer(onSocket, rawSockets, servers) {
+  return new Promise((resolve, reject) => {
+    const server = require('net').createServer((socket) => {
+      rawSockets.push(socket);
+      onSocket(socket);
+    });
+    server.listen(0, '127.0.0.1', () => resolve(server));
+    server.on('error', reject);
+    servers.push(server);
+  });
+}
+
+async function testBoundedResponse() {
+  console.log('Testing: bounded response byte limits and body consumption timeouts...');
+  const { boundedFetch, readBoundedJson, readBoundedText } = require(bridgePath);
+  assert.strictEqual(typeof boundedFetch, 'function', 'boundedFetch must be exported');
+  assert.strictEqual(typeof readBoundedJson, 'function', 'readBoundedJson must be exported');
+  assert.strictEqual(typeof readBoundedText, 'function', 'readBoundedText must be exported');
+
+  const servers = [];
+  const rawSockets = [];
+  const start = async (handler) => {
+    const s = await startTestServer(handler);
+    servers.push(s);
+    return s;
+  };
+  const portOf = s => s.address().port;
+
+  try {
+    // 1. Stream overflow: 128KB in 1KB chunks, no Content-Length
+    {
+      let clientDisconnected = false;
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        req.on('close', () => { clientDisconnected = true; });
+        let sent = 0;
+        const timer = setInterval(() => {
+          if (res.writableEnded) { clearInterval(timer); return; }
+          res.write('x'.repeat(1024));
+          sent += 1024;
+          if (sent >= 128 * 1024) { clearInterval(timer); res.end(); }
+        }, 2);
+      });
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, 65536, 5000);
+      await assert.rejects(readBoundedJson(res, 65536), /exceeds 65536 byte limit/);
+      await new Promise(r => setTimeout(r, 50));
+      assert(clientDisconnected, 'server should observe client disconnect after overflow abort');
+      console.log('  ✔ readBoundedJson rejects on stream overflow and server sees disconnect');
+    }
+
+    // 2. Eager Content-Length rejection: oversized CL, body never sent.
+    //    If the client tried to read the body it would hang until timeout,
+    //    so a fast rejection proves no body read happened.
+    {
+      const server = await startRawServer((socket) => {
+        socket.write(
+          'HTTP/1.1 200 OK\r\n' +
+          'Content-Type: application/json\r\n' +
+          'Content-Length: 200000\r\n' +
+          'Connection: close\r\n' +
+          '\r\n'
+        );
+        // Never send a body — a body read would hang until the timeout.
+      }, rawSockets, servers);
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, 65536, 5000);
+      const t0 = Date.now();
+      await assert.rejects(readBoundedJson(res, 65536), /Content-Length 200000 exceeds 65536 byte limit/);
+      assert(Date.now() - t0 < 1000, 'eager Content-Length rejection must not read the body');
+      console.log('  ✔ readBoundedJson rejects eagerly on oversized Content-Length');
+    }
+
+    // 3. Invalid Content-Length values. undici rejects malformed CL at
+    //    fetch time, so exercise the readBoundedJson validation branch
+    //    directly with a stub response.
+    for (const badCl of ['abc', '-1']) {
+      let released = false;
+      const fakeRes = {
+        headers: { get: (h) => (String(h).toLowerCase() === 'content-length' ? badCl : null) },
+        json: () => Promise.resolve({}),
+        body: null,
+        boundedRelease: () => { released = true; }
+      };
+      await assert.rejects(readBoundedJson(fakeRes, 65536), /Invalid Content-Length header/);
+      assert(released, 'boundedRelease should be called on invalid Content-Length');
+    }
+    console.log('  ✔ readBoundedJson rejects on invalid Content-Length values');
+
+    // 4. Total timeout: headers arrive, body slow-drips past timeoutMs
+    {
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        const timer = setInterval(() => {
+          if (!res.writableEnded) res.write('a');
+        }, 100);
+        req.on('close', () => clearInterval(timer));
+      });
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, 65536, 300);
+      const t0 = Date.now();
+      await assert.rejects(readBoundedJson(res, 65536), /timed out|abort/i);
+      const elapsed = Date.now() - t0;
+      assert(elapsed < 2000, `total timeout should fire near 300ms, took ${elapsed}ms`);
+      console.log(`  ✔ total timeout aborts slow-drip body (fired at ~${elapsed}ms)`);
+    }
+
+    // 5. Boundary: exactly maxBytes passes, maxBytes + 1 rejects
+    {
+      const maxBytes = 1024;
+      const padLen = maxBytes - Buffer.byteLength('{"k":""}');
+      const exactBody = `{"k":"${'a'.repeat(padLen)}"}`;
+      assert.strictEqual(Buffer.byteLength(exactBody), maxBytes);
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(exactBody);
+      });
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, maxBytes, 5000);
+      const data = await readBoundedJson(res, maxBytes);
+      assert.strictEqual(data.k.length, padLen, 'exact-maxBytes body should parse');
+      console.log('  ✔ body of exactly maxBytes parses successfully');
+
+      const overBody = `{"k":"${'a'.repeat(padLen + 1)}"}`;
+      assert.strictEqual(Buffer.byteLength(overBody), maxBytes + 1);
+      const server2 = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(overBody);
+      });
+      const res2 = await boundedFetch(`http://127.0.0.1:${portOf(server2)}/`, {}, maxBytes, 5000);
+      await assert.rejects(readBoundedJson(res2, maxBytes), /exceeds 1024 byte limit/);
+      console.log('  ✔ body of maxBytes+1 rejects');
+    }
+
+    // 6. Regression: small valid JSON still parses
+    {
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ id: 'hermes-agent' }] }));
+      });
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, 65536, 5000);
+      const data = await readBoundedJson(res, 65536);
+      assert.strictEqual(data.data[0].id, 'hermes-agent');
+      console.log('  ✔ small valid JSON body still parses (regression)');
+    }
+
+    // 7. readBoundedText reads a small text body
+    {
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('plain error body');
+      });
+      const res = await boundedFetch(`http://127.0.0.1:${portOf(server)}/`, {}, 32768, 5000);
+      const text = await readBoundedText(res, 32768);
+      assert.strictEqual(text, 'plain error body');
+      console.log('  ✔ readBoundedText reads small text body');
+    }
+
+    // 8. E2E: status against a >64KB streaming server reports the byte
+    //    limit and exits promptly (no OOM, no 10s hang)
+    {
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        const timer = setInterval(() => {
+          if (!res.writableEnded) res.write('x'.repeat(1024));
+        }, 2);
+        req.on('close', () => clearInterval(timer));
+      });
+      const t0 = Date.now();
+      const res = await runBridge(['status'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${portOf(server)}`,
+        HERMES_API_SERVER_PORT: String(portOf(server))
+      });
+      const elapsed = Date.now() - t0;
+      assert.strictEqual(res.code, 0, `status exit code should be 0, got ${res.code}`);
+      const json = JSON.parse(res.stdout);
+      assert.strictEqual(json.success, false, 'status should fail against overflow server');
+      assert(/exceeds 65536 byte limit/.test(json.error), `error should mention byte limit, got: ${json.error}`);
+      assert(elapsed < 8000, `bridge should exit promptly, took ${elapsed}ms`);
+      console.log(`  ✔ e2e: status against >64KB stream reports byte-limit error and exits in ${elapsed}ms`);
+    }
+
+    // 9. SSE stream: a single oversized line with no newline must be
+    //    rejected (lineBuffer cap) — the idle timer resets on every chunk,
+    //    so without the cap a huge line grows memory without bound.
+    {
+      const server = await start((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('data: ' + 'x'.repeat(1500 * 1024) + '\n\n');
+        res.end();
+      });
+      const t0 = Date.now();
+      const res = await runBridge(['stream-chat', '--prompt', 'hi'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${portOf(server)}`,
+        HERMES_API_SERVER_PORT: String(portOf(server))
+      });
+      const elapsed = Date.now() - t0;
+      assert.strictEqual(res.code, 0, `stream-chat exit code should be 0, got ${res.code}`);
+      const events = res.stdout.trim().split('\n').map(l => JSON.parse(l));
+      const errEvent = events.find(e => e.type === 'error');
+      assert(errEvent, 'should emit an error event for oversized SSE line');
+      assert(/exceeds 1048576 character limit/.test(errEvent.error), `error should mention the line limit, got: ${errEvent.error}`);
+      assert(elapsed < 8000, `bridge should exit promptly, took ${elapsed}ms`);
+      console.log(`  ✔ e2e: oversized SSE line rejected and bridge exits in ${elapsed}ms`);
+    }
+  } finally {
+    for (const s of servers) {
+      s.close();
+      if (typeof s.closeAllConnections === 'function') s.closeAllConnections();
+    }
+    for (const s of rawSockets) {
+      try { s.destroy(); } catch (e) {}
+    }
+  }
+}
+
 async function testDeleteCreatedSessions() {
   console.log(`Testing: delete-session command and cleanup of created test sessions...`);
   assert(createdSessionIds.length > 0, 'Should have tracked sessions created during testing');
@@ -784,6 +1007,7 @@ async function runAllTests() {
     await testClientGeneratedSessionId();
     await testConcurrentStreams();
     await testStreamChatNotify();
+    await testBoundedResponse();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
