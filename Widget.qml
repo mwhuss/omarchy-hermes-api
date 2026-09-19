@@ -993,6 +993,13 @@ Panel {
           if (!updatedEv.emoji && tools[foundIdx].emoji) updatedEv.emoji = tools[foundIdx].emoji
           tools[foundIdx] = updatedEv
         } else {
+          // Defense-in-depth: the bridge already caps tool events per stream;
+          // skip NEW events beyond the cap so a compromised bridge cannot grow
+          // the retained list without bound. Updates to existing events still
+          // apply.
+          if (tools.length >= 500) {
+            return
+          }
           tools.push(ev)
         }
         streamInfo.toolEvents = tools

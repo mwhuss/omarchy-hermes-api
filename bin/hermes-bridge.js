@@ -29,6 +29,15 @@ const MAX_FETCH_BYTES = 1048576;
 // chunk, so a single huge line with no newline would grow lineBuffer without
 // bound. Cap the pending line before it is processed.
 const MAX_SSE_LINE_CHARS = 1048576;
+// tool_progress forwarding caps (per stream): a malicious configured endpoint
+// must not be able to grow process memory without limit by streaming unlimited
+// tool events, nor hold a stream open indefinitely.
+const MAX_TOOL_EVENTS = 500;
+const MAX_TOOL_EVENT_BYTES = 4096;
+// Total-duration ceiling for one stream-chat request. Unlike the idle timer
+// this never resets, so dribbling one byte at a time cannot keep the stream
+// alive forever. Overridable via env for tests only.
+const MAX_STREAM_DURATION_MS = parseInt(process.env.HERMES_STREAM_DURATION_MS, 10) || 600000;
 
 function isLoopbackHost(hostname) {
   return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
@@ -965,6 +974,94 @@ async function handleStreamChat(options) {
       }, IDLE_TIMEOUT_MS);
     };
 
+    // Total-duration ceiling: never reset, so a hostile endpoint cannot hold
+    // the stream open indefinitely by dribbling data.
+    const durationTimer = setTimeout(() => {
+      controller.abort(new Error('Stream request exceeded 10m total duration'));
+    }, MAX_STREAM_DURATION_MS);
+
+    // Per-stream tool_progress bounds. On overflow emit exactly one
+    // 'truncated' notice, then drop further tool events (the stream itself
+    // continues for text deltas until done/timeout).
+    let toolEventCount = 0;
+    let toolEventsTruncated = false;
+
+    const truncateToBytes = (s, maxBytes) => {
+      if (Buffer.byteLength(s, 'utf8') <= maxBytes) return s;
+      let out = '';
+      let bytes = 0;
+      for (const ch of s) {
+        const b = Buffer.byteLength(ch, 'utf8');
+        if (bytes + b > maxBytes) break;
+        out += ch;
+        bytes += b;
+      }
+      return out;
+    };
+
+    const emitToolProgress = (ev) => {
+      if (toolEventsTruncated) {
+        return;
+      }
+      if (toolEventCount >= MAX_TOOL_EVENTS) {
+        toolEventsTruncated = true;
+        process.stdout.write(JSON.stringify({
+          type: 'tool_progress',
+          session_id: emitSessionId,
+          raw_session_id: resolvedSessionId,
+          composite_id: compositeId,
+          tool: 'tool',
+          status: 'truncated',
+          label: 'Tool event limit reached',
+          emoji: '',
+          id: ''
+        }) + '\n');
+        return;
+      }
+      const tool = String(ev.tool || 'tool');
+      const emoji = String(ev.emoji || '');
+      let label = String(ev.label || '');
+      let status = String(ev.status || 'running');
+      let id = String(ev.id || '');
+      const byteLen = (s) => Buffer.byteLength(s, 'utf8');
+      // Every attacker-controlled field (tool, label, status, emoji, id) must
+      // fit the per-event byte budget, or a hostile endpoint can grow the
+      // retained event list without bound by padding any single field.
+      const fixed = byteLen(tool) + byteLen(emoji);
+      let total = fixed + byteLen(label) + byteLen(status) + byteLen(id);
+      if (total > MAX_TOOL_EVENT_BYTES) {
+        // Truncate label, then status, then id; drop only if tool+emoji alone exceed.
+        if (fixed > MAX_TOOL_EVENT_BYTES) {
+          return;
+        }
+        label = truncateToBytes(label, MAX_TOOL_EVENT_BYTES - fixed - byteLen(status) - byteLen(id));
+        total = fixed + byteLen(label) + byteLen(status) + byteLen(id);
+        if (total > MAX_TOOL_EVENT_BYTES) {
+          status = truncateToBytes(status, MAX_TOOL_EVENT_BYTES - fixed - byteLen(label) - byteLen(id));
+          total = fixed + byteLen(label) + byteLen(status) + byteLen(id);
+        }
+        if (total > MAX_TOOL_EVENT_BYTES) {
+          id = truncateToBytes(id, MAX_TOOL_EVENT_BYTES - fixed - byteLen(label) - byteLen(status));
+          total = fixed + byteLen(label) + byteLen(status) + byteLen(id);
+          if (total > MAX_TOOL_EVENT_BYTES) {
+            return;
+          }
+        }
+      }
+      toolEventCount += 1;
+      process.stdout.write(JSON.stringify({
+        type: 'tool_progress',
+        session_id: emitSessionId,
+        raw_session_id: resolvedSessionId,
+        composite_id: compositeId,
+        tool,
+        status,
+        label,
+        emoji,
+        id
+      }) + '\n');
+    };
+
     const endpointUrl = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
     const headers = {
       'Content-Type': 'application/json',
@@ -990,11 +1087,13 @@ async function handleStreamChat(options) {
       });
     } catch (fetchErr) {
       clearTimeout(idleTimer);
+      clearTimeout(durationTimer);
       throw fetchErr;
     }
 
     if (!res.ok) {
       clearTimeout(idleTimer);
+      clearTimeout(durationTimer);
       let errDetail = '';
       try {
         const errJson = await readBoundedJson(res, 32768);
@@ -1010,6 +1109,7 @@ async function handleStreamChat(options) {
 
     if (!res.body) {
       clearTimeout(idleTimer);
+      clearTimeout(durationTimer);
       throw new Error('Response body is null or undefined');
     }
 
@@ -1057,17 +1157,13 @@ async function handleStreamChat(options) {
 
         if (isToolProgress && eventData) {
           const ev = eventData;
-          process.stdout.write(JSON.stringify({
-            type: 'tool_progress',
-            session_id: emitSessionId,
-            raw_session_id: resolvedSessionId,
-            composite_id: compositeId,
+          emitToolProgress({
             tool: ev.tool || ev.name || 'tool',
             status: ev.status || 'running',
             label: ev.label || ev.detail || ev.message || '',
             emoji: ev.emoji || '',
             id: ev.toolCallId || ev.id || ''
-          }) + '\n');
+          });
           return;
         }
 
@@ -1092,16 +1188,12 @@ async function handleStreamChat(options) {
           for (const tc of delta.tool_calls) {
             const fn = tc?.function;
             if (fn && fn.name) {
-              process.stdout.write(JSON.stringify({
-                type: 'tool_progress',
-                session_id: emitSessionId,
-                raw_session_id: resolvedSessionId,
-                composite_id: compositeId,
+              emitToolProgress({
                 tool: fn.name,
                 status: 'running',
                 label: fn.arguments || '',
                 id: tc.id || tc.call_id || ''
-              }) + '\n');
+              });
             }
           }
         }
@@ -1131,6 +1223,7 @@ async function handleStreamChat(options) {
       }
     } finally {
       clearTimeout(idleTimer);
+      clearTimeout(durationTimer);
       try { await reader.cancel(); } catch (_) {}
     }
 
