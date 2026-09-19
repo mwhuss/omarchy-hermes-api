@@ -874,6 +874,109 @@ async function testToolProgressRegression() {
   }
 }
 
+async function testNon2xxStalledErrorBody() {
+  console.log('Testing: non-2xx stalled error body timeout (hostile endpoint)...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.flushHeaders();
+      // Never send a body or close the connection
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const t0 = Date.now();
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port),
+      HERMES_ERROR_BODY_TIMEOUT_MS: '400'
+    });
+    const elapsed = Date.now() - t0;
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const errorEvent = events.find(e => e.type === 'error');
+    assert(errorEvent, 'stalled non-2xx body must produce an error event');
+    assert(/timed out|abort/i.test(errorEvent.error), `error should mention timeout/abort, got: ${errorEvent.error}`);
+    assert(elapsed < 3000, `bridge must exit promptly on error body timeout, took ${elapsed}ms`);
+
+    console.log(`  ✔ stalled non-2xx body aborted promptly at timeout (${elapsed}ms: ${errorEvent.error})`);
+  } finally {
+    server.close();
+  }
+}
+
+async function testNon2xxSlowDripErrorBody() {
+  console.log('Testing: non-2xx slow-drip error body timeout (hostile endpoint)...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.flushHeaders();
+      const timer = setInterval(() => {
+        if (!res.writableEnded) res.write('x');
+      }, 100);
+      req.on('close', () => clearInterval(timer));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const t0 = Date.now();
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port),
+      HERMES_ERROR_BODY_TIMEOUT_MS: '400'
+    });
+    const elapsed = Date.now() - t0;
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const errorEvent = events.find(e => e.type === 'error');
+    assert(errorEvent, 'slow-drip non-2xx body must produce an error event');
+    assert(/timed out|abort/i.test(errorEvent.error), `error should mention timeout/abort, got: ${errorEvent.error}`);
+    assert(elapsed < 3000, `bridge must exit promptly on slow-drip timeout, took ${elapsed}ms`);
+
+    console.log(`  ✔ slow-drip non-2xx body aborted promptly at timeout (${elapsed}ms: ${errorEvent.error})`);
+  } finally {
+    server.close();
+  }
+}
+
+async function testNon2xxNormalErrorBody() {
+  console.log('Testing: non-2xx normal error body parses properly...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Invalid model configuration' } }));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const errorEvent = events.find(e => e.type === 'error');
+    assert(errorEvent, 'non-2xx must produce an error event');
+    assert(/Invalid model configuration/.test(errorEvent.error), `error detail should be extracted, got: ${errorEvent.error}`);
+
+    console.log(`  ✔ normal non-2xx error extracted message: ${errorEvent.error}`);
+  } finally {
+    server.close();
+  }
+}
+
 function startTestServer(handler) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(handler);
@@ -1253,6 +1356,9 @@ async function runAllTests() {
     await testToolProgressOversizedStatus();
     await testStreamDurationCeiling();
     await testToolProgressRegression();
+    await testNon2xxStalledErrorBody();
+    await testNon2xxSlowDripErrorBody();
+    await testNon2xxNormalErrorBody();
     await testBoundedResponse();
     await testDeleteCreatedSessions();
     console.log('\n====================================');

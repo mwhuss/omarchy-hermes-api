@@ -191,6 +191,17 @@ async function readBoundedText(res, maxBytes = 32768) {
     res?.boundedRelease?.();
     return '';
   }
+  const cl = res.headers?.get ? res.headers.get('content-length') : null;
+  if (cl !== null && cl !== undefined) {
+    if (!/^\d+$/.test(cl)) {
+      res.boundedRelease?.();
+      throw new Error('Invalid Content-Length header');
+    }
+    if (Number(cl) > maxBytes) {
+      res.boundedRelease?.();
+      throw new Error(`Content-Length ${cl} exceeds ${maxBytes} byte limit`);
+    }
+  }
   return await readBoundedBody(res, maxBytes);
 }
 
@@ -1093,16 +1104,33 @@ async function handleStreamChat(options) {
 
     if (!res.ok) {
       clearTimeout(idleTimer);
-      clearTimeout(durationTimer);
+      // Keep AbortController timeout active through error-body consumption.
+      // An error response should be small and arrive promptly; bound it by
+      // HERMES_ERROR_BODY_TIMEOUT_MS (default 10s, overridable via env for tests).
+      const errorBodyTimeoutMs = parseInt(process.env.HERMES_ERROR_BODY_TIMEOUT_MS, 10) || 10000;
+      const errorBodyTimer = setTimeout(() => {
+        controller.abort(new Error(`Error response body timed out after ${errorBodyTimeoutMs}ms`));
+      }, errorBodyTimeoutMs);
+
       let errDetail = '';
       try {
-        const errJson = await readBoundedJson(res, 32768);
-        errDetail = errJson.error?.message || errJson.message || JSON.stringify(errJson);
-      } catch (e) {
-        try {
-          const errText = await readBoundedText(res, 32768);
-          errDetail = errText.slice(0, 512);
-        } catch (_) {}
+        const rawText = await readBoundedText(res, 32768);
+        if (rawText) {
+          try {
+            const errJson = JSON.parse(rawText);
+            errDetail = errJson.error?.message || errJson.message || JSON.stringify(errJson);
+          } catch (_) {
+            errDetail = rawText.slice(0, 512);
+          }
+        }
+      } catch (readErr) {
+        if (controller.signal.aborted || /exceeds \d+ byte limit/.test(readErr.message)) {
+          throw readErr;
+        }
+      } finally {
+        clearTimeout(errorBodyTimer);
+        clearTimeout(durationTimer);
+        try { await res.body?.cancel(); } catch (_) {}
       }
       throw new Error(`HTTP ${res.status}${errDetail ? `: ${errDetail}` : ''}`);
     }
