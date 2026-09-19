@@ -633,6 +633,247 @@ async function testMockSseStreamWithCustomEvents() {
   }
 }
 
+async function testToolProgressEventCap() {
+  console.log('Testing: tool_progress event cap (hostile endpoint)...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      for (let i = 0; i < 501; i++) {
+        res.write('event: hermes.tool.progress\n');
+        res.write(`data: {"tool":"t","status":"running","label":"l${i}","id":"call_${i}"}\n\n`);
+      }
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const toolEvents = events.filter(e => e.type === 'tool_progress');
+    const running = toolEvents.filter(e => e.status === 'running');
+    const truncated = toolEvents.filter(e => e.status === 'truncated');
+
+    assert.strictEqual(running.length, 500, `expected 500 forwarded tool events, got ${running.length}`);
+    assert.strictEqual(truncated.length, 1, `expected exactly 1 truncated notice, got ${truncated.length}`);
+    assert.strictEqual(truncated[0].label, 'Tool event limit reached');
+    assert.strictEqual(running[0].id, 'call_0');
+    assert.strictEqual(running[499].id, 'call_499');
+    assert(!toolEvents.some(e => e.id === 'call_500'), 'event beyond the cap must be dropped');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'stream must continue to done after the cap is hit');
+
+    console.log('  ✔ 501-event stream capped at 500 + 1 truncated notice, stream completed cleanly');
+  } finally {
+    server.close();
+  }
+}
+
+async function testToolProgressOversizedLabel() {
+  console.log('Testing: tool_progress oversized label (hostile endpoint)...');
+  const bigLabel = 'x'.repeat(100 * 1024); // 100 KiB
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write('event: hermes.tool.progress\n');
+      res.write(`data: ${JSON.stringify({ tool: 'terminal_run', status: 'running', label: bigLabel, id: 'call_big' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const toolEvents = events.filter(e => e.type === 'tool_progress');
+    assert.strictEqual(toolEvents.length, 1, `expected 1 tool event, got ${toolEvents.length}`);
+
+    const ev = toolEvents[0];
+    const fieldBytes = Buffer.byteLength(ev.tool, 'utf8') + Buffer.byteLength(ev.label, 'utf8')
+      + Buffer.byteLength(ev.emoji || '', 'utf8') + Buffer.byteLength(ev.id, 'utf8');
+    assert(fieldBytes <= 4096, `tool event fields must fit 4 KiB, got ${fieldBytes} bytes`);
+    assert(ev.label.length > 0, 'label should be truncated to fit, not emptied');
+    assert.strictEqual(ev.id, 'call_big');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'stream must complete after an oversized event');
+
+    console.log(`  ✔ 100 KiB label truncated to ${Buffer.byteLength(ev.label, 'utf8')} bytes, no crash`);
+  } finally {
+    server.close();
+  }
+}
+
+async function testToolProgressOversizedStatus() {
+  console.log('Testing: tool_progress oversized status (hostile endpoint)...');
+  const bigStatus = 's'.repeat(100 * 1024); // 100 KiB
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write('event: hermes.tool.progress\n');
+      res.write(`data: ${JSON.stringify({ tool: 'terminal_run', status: bigStatus, label: 'ls', id: 'call_s' })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const toolEvents = events.filter(e => e.type === 'tool_progress');
+    assert.strictEqual(toolEvents.length, 1, `expected 1 tool event, got ${toolEvents.length}`);
+
+    const ev = toolEvents[0];
+    // All five attacker-controlled fields must fit the 4 KiB per-event budget.
+    const fieldBytes = Buffer.byteLength(ev.tool, 'utf8') + Buffer.byteLength(ev.label, 'utf8')
+      + Buffer.byteLength(ev.emoji || '', 'utf8') + Buffer.byteLength(ev.id, 'utf8')
+      + Buffer.byteLength(ev.status, 'utf8');
+    assert(fieldBytes <= 4096, `tool event fields must fit 4 KiB, got ${fieldBytes} bytes`);
+    assert.strictEqual(ev.id, 'call_s', 'id must survive status truncation (truncated last)');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'stream must complete after an oversized status');
+
+    console.log(`  ✔ 100 KiB status truncated to ${Buffer.byteLength(ev.status, 'utf8')} bytes, no crash`);
+  } finally {
+    server.close();
+  }
+}
+
+async function testStreamDurationCeiling() {
+  console.log('Testing: stream total-duration ceiling (hostile endpoint)...');
+  // Dribble one event every 400 ms: keeps the 60 s idle timer perpetually
+  // reset, so only the (shortened) total-duration ceiling can end the stream.
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      let n = 0;
+      const interval = setInterval(() => {
+        res.write('event: hermes.tool.progress\n');
+        res.write(`data: {"tool":"t","status":"running","label":"tick","id":"tick_${n++}"}\n\n`);
+      }, 400);
+      res.on('close', () => clearInterval(interval));
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port),
+      HERMES_STREAM_DURATION_MS: '1500'
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const errorEvent = events.find(e => e.type === 'error');
+    assert(errorEvent, 'duration ceiling must produce an error event');
+    assert(/total duration/.test(errorEvent.error), `error should mention total duration, got: ${errorEvent.error}`);
+    assert(!events.some(e => e.type === 'done'), 'stream must not complete normally');
+
+    console.log(`  ✔ dribbling stream aborted at duration ceiling (${errorEvent.error})`);
+  } finally {
+    server.close();
+  }
+}
+
+async function testToolProgressRegression() {
+  console.log('Testing: normal tool_progress stream unchanged (regression)...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      const events = [
+        { tool: 'terminal_run', status: 'running', label: 'ls -la', emoji: '🖥️', id: 'call_a' },
+        { tool: 'terminal_run', status: 'done', label: 'ls -la', emoji: '🖥️', id: 'call_a' },
+        { tool: 'web_search', status: 'running', label: 'hermes docs', emoji: '🔎', id: 'call_b' }
+      ];
+      for (const ev of events) {
+        res.write('event: hermes.tool.progress\n');
+        res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      }
+      res.write('data: {"choices":[{"delta":{"content":"All done"}}]}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const toolEvents = events.filter(e => e.type === 'tool_progress');
+    assert.strictEqual(toolEvents.length, 3, `expected all 3 tool events forwarded, got ${toolEvents.length}`);
+    assert.deepStrictEqual(
+      toolEvents.map(e => ({ tool: e.tool, status: e.status, label: e.label, emoji: e.emoji, id: e.id })),
+      [
+        { tool: 'terminal_run', status: 'running', label: 'ls -la', emoji: '🖥️', id: 'call_a' },
+        { tool: 'terminal_run', status: 'done', label: 'ls -la', emoji: '🖥️', id: 'call_a' },
+        { tool: 'web_search', status: 'running', label: 'hermes docs', emoji: '🔎', id: 'call_b' }
+      ],
+      'tool events must be forwarded unchanged'
+    );
+    assert(!toolEvents.some(e => e.status === 'truncated'), 'no truncated notice for a normal stream');
+
+    console.log('  ✔ normal 3-event tool stream forwarded unchanged');
+  } finally {
+    server.close();
+  }
+}
+
 function startTestServer(handler) {
   return new Promise((resolve, reject) => {
     const server = http.createServer(handler);
@@ -1007,6 +1248,11 @@ async function runAllTests() {
     await testClientGeneratedSessionId();
     await testConcurrentStreams();
     await testStreamChatNotify();
+    await testToolProgressEventCap();
+    await testToolProgressOversizedLabel();
+    await testToolProgressOversizedStatus();
+    await testStreamDurationCeiling();
+    await testToolProgressRegression();
     await testBoundedResponse();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
