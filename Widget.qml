@@ -308,6 +308,9 @@ Panel {
   property string promptDraft: ""
   property int promptHistoryIndex: -1
 
+  property string copyFeedbackKey: ""
+  property bool copyFeedbackOk: false
+
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property color background: Color.popups.background
   readonly property color border: Color.popups.border
@@ -350,6 +353,13 @@ Panel {
     interval: 3500
     repeat: false
     onTriggered: root.settingsSuccessMessage = ""
+  }
+
+  Timer {
+    id: copyFeedbackTimer
+    interval: 1500
+    repeat: false
+    onTriggered: root.copyFeedbackKey = ""
   }
 
   Timer {
@@ -1140,6 +1150,21 @@ Panel {
   onOmarchyOnlyChanged: updateFilteredSessions()
   onActiveTargetChanged: updateFilteredSessions()
 
+  function setCopyFeedback(key, ok) {
+    copyFeedbackKey = key
+    copyFeedbackOk = ok
+    copyFeedbackTimer.restart()
+  }
+
+  function copyToClipboard(key, text) {
+    try {
+      Qt.clipboard.text = String(text || "")
+      setCopyFeedback(key, true)
+    } catch (e) {
+      setCopyFeedback(key, false)
+    }
+  }
+
   function formatTime(isoStr) {
     if (!isoStr) return ""
     try {
@@ -1777,6 +1802,44 @@ Panel {
             root.finishSessionStream(proc.targetSessionId, streamInfo.streamingContent, false, streamInfo.toolEvents)
           }
         }
+      }
+    }
+  }
+
+  Component {
+    id: copyButtonComponent
+    Rectangle {
+      id: copyBtn
+      property string copyKey: ""
+      property string copyText: ""
+      width: 16
+      height: 16
+      radius: 3
+
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        text: {
+          if (root.copyFeedbackKey === copyKey) {
+            return root.copyFeedbackOk ? "\uF00C" : "\uF05E"
+          }
+          return "\uF0C8"
+        }
+        font.family: root.fontFamily
+        font.pixelSize: 9
+        color: {
+          if (root.copyFeedbackKey === copyKey) {
+            return root.copyFeedbackOk ? "#10B981" : "#EF4444"
+          }
+          return root.subtleText
+        }
+      }
+
+      MouseArea {
+        id: copyBtnMa
+        anchors.fill: parent
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.copyToClipboard(copyKey, copyText)
       }
     }
   }
@@ -3027,6 +3090,7 @@ Panel {
                         delegate: Rectangle {
                           id: toolCallBox
                           property bool expanded: false
+                          property bool hovered: false
                           Layout.fillWidth: true
                           radius: 5
                           color: root.toolBadgeBg
@@ -3042,7 +3106,21 @@ Panel {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             hoverEnabled: true
+                            onHoverChanged: toolCallBox.hovered = containsMouse
                             onClicked: toolCallBox.expanded = !toolCallBox.expanded
+                          }
+
+                          Loader {
+                            id: toolCallCopyLoader
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.margins: 5
+                            active: toolCallBox.hovered
+                            sourceComponent: copyButtonComponent
+                            onLoaded: {
+                              item.copyKey = "call-" + (modelData.id || index)
+                              item.copyText = String(modelData.summary || "")
+                            }
                           }
 
                           ColumnLayout {
@@ -3107,6 +3185,7 @@ Panel {
                         id: toolResultBox
                         visible: modelData.role === "tool"
                         property bool expanded: false
+                        property bool hovered: false
                         Layout.fillWidth: true
                         radius: 5
                         color: root.toolBadgeBg
@@ -3122,7 +3201,21 @@ Panel {
                           anchors.fill: parent
                           cursorShape: Qt.PointingHandCursor
                           hoverEnabled: true
+                          onHoverChanged: toolResultBox.hovered = containsMouse
                           onClicked: toolResultBox.expanded = !toolResultBox.expanded
+                        }
+
+                        Loader {
+                          id: toolResultCopyLoader
+                          anchors.top: parent.top
+                          anchors.right: parent.right
+                          anchors.margins: 5
+                          active: toolResultBox.hovered
+                          sourceComponent: copyButtonComponent
+                          onLoaded: {
+                            item.copyKey = "result-" + index
+                            item.copyText = modelData.tool_formatted || String(modelData.content || "").trim()
+                          }
                         }
 
                         ColumnLayout {
@@ -3183,7 +3276,9 @@ Panel {
 
                       // User / Assistant Bubble Card
                       Rectangle {
+                        id: assistantBubble
                         visible: modelData.role !== "tool" && (modelData.content && String(modelData.content).trim() !== "")
+                        property bool hovered: false
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
                         Layout.maximumWidth: parent.width * 0.88
                         implicitWidth: msgText.implicitWidth + 20
@@ -3191,6 +3286,25 @@ Panel {
                         radius: 8
                         color: modelData.role === "user" ? root.userBubbleBg : root.cardBg
                         border.color: modelData.role === "user" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3) : "transparent"
+
+                        MouseArea {
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          onHoverChanged: assistantBubble.hovered = containsMouse
+                        }
+
+                        Loader {
+                          id: assistantCopyLoader
+                          anchors.top: parent.top
+                          anchors.right: parent.right
+                          anchors.margins: 5
+                          active: modelData.role === "assistant" && assistantBubble.hovered
+                          sourceComponent: copyButtonComponent
+                          onLoaded: {
+                            item.copyKey = "msg-" + index
+                            item.copyText = String(modelData.content || "").trim()
+                          }
+                        }
 
                         Text {
                           id: msgText
