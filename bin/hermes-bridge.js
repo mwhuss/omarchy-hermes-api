@@ -890,33 +890,8 @@ async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
   }
 }
 
-function sendDesktopNotification(title, message, isError = false, appName = 'Hermes') {
-  const { spawn } = require('child_process');
-  let cleanMsg = String(message || '').replace(/```[\s\S]*?```/g, '[Code]').replace(/[`*_~#<>&]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/\s+/g, ' ').trim();
-  if (cleanMsg.length > 140) cleanMsg = cleanMsg.slice(0, 137) + '...';
-  if (!cleanMsg) cleanMsg = isError ? 'An error occurred.' : 'Response completed.';
-
-  let cleanTitle = String(title || appName || 'Hermes').replace(/[<>&]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/\s+/g, ' ').trim();
-  if (cleanTitle.length > 60) cleanTitle = cleanTitle.slice(0, 57) + '...';
-
-  const urgency = isError ? 'critical' : 'normal';
-  const bin = fs.existsSync('/usr/share/omarchy/bin/omarchy-notification-send')
-    ? '/usr/share/omarchy/bin/omarchy-notification-send'
-    : (fs.existsSync('/usr/bin/omarchy-notification-send') ? '/usr/bin/omarchy-notification-send' : '/usr/bin/notify-send');
-
-  const args = bin.includes('omarchy-notification-send')
-    ? ['--app-name', appName || 'Hermes', '-u', urgency, '-g', isError ? '\u{f015a}' : '\u{f06d3}', '--', cleanTitle, cleanMsg]
-    : ['-a', appName || 'Hermes', '-u', urgency, '--', cleanTitle, cleanMsg];
-
-  try {
-    const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
-    child.on('error', () => {});
-    child.unref();
-  } catch (e) {}
-}
-
 async function handleStreamChat(options) {
-  const { sessionId, prompt, model, history, systemPrompt, notify, endpoint, profile } = options;
+  const { sessionId, prompt, model, history, systemPrompt, endpoint, profile } = options;
 
   if (!prompt || typeof prompt !== 'string') {
     process.stdout.write(JSON.stringify({ type: 'error', error: 'Prompt is required' }) + '\n');
@@ -1265,11 +1240,6 @@ async function handleStreamChat(options) {
       full_text: fullText,
       finish_reason: 'stop'
     }) + '\n');
-
-    if (notify) {
-      const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
-      sendDesktopNotification(notifTitle, fullText, false, cfg.serverName || notifTitle);
-    }
   } catch (err) {
     process.stdout.write(JSON.stringify({
       type: 'error',
@@ -1278,11 +1248,6 @@ async function handleStreamChat(options) {
       composite_id: compositeId,
       error: err.message
     }) + '\n');
-
-    if (notify) {
-      const notifTitle = cfg.isDefault ? cfg.endpointName : `${cfg.endpointName} (${cfg.profileName})`;
-      sendDesktopNotification(`${notifTitle} - Error`, err.message, true, cfg.serverName || notifTitle);
-    }
   }
 }
 

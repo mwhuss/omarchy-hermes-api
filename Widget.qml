@@ -562,6 +562,16 @@ Panel {
 
         root.sessions = merged
 
+        // If selectedSessionId was a raw_id, canonicalize it now that sessions are loaded
+        if (root.selectedSessionId) {
+          for (var k = 0; k < merged.length; k++) {
+            if (merged[k].raw_id === root.selectedSessionId) {
+              root.selectedSessionId = merged[k].id
+              break
+            }
+          }
+        }
+
         if (!root.hasSelectedInitialSession && merged.length > 0) {
           root.hasSelectedInitialSession = true
           root.selectSession(merged[0].id)
@@ -574,18 +584,10 @@ Panel {
 
   function selectSession(sessionId) {
     root.hasSelectedInitialSession = true
-    if (selectedSessionId === sessionId) return
-    isEditingTitle = false
-    isConfirmingDeleteSession = false
-    showSystemPromptInput = false
-    sessionSystemPrompt = ""
-    promptDraft = ""
-    promptHistoryIndex = -1
-    if (promptInput) promptInput.text = ""
-    selectedSessionId = sessionId
-    
+    var canonicalId = sessionId
     for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].id === sessionId) {
+      if (sessions[i].id === sessionId || sessions[i].raw_id === sessionId) {
+        canonicalId = sessions[i].id
         activeSessionTitle = sessions[i].title || "Session"
         root.currentSessionTarget = {
           endpointId: sessions[i].endpoint_id || "",
@@ -594,8 +596,22 @@ Panel {
         break
       }
     }
+
+    if (selectedSessionId === canonicalId && root.messages.length > 0) {
+      root.ensureSessionVisible(canonicalId)
+      return
+    }
+    isEditingTitle = false
+    isConfirmingDeleteSession = false
+    showSystemPromptInput = false
+    sessionSystemPrompt = ""
+    promptDraft = ""
+    promptHistoryIndex = -1
+    if (promptInput) promptInput.text = ""
+    selectedSessionId = canonicalId
+
     if (!root.currentSessionTarget || !root.currentSessionTarget.endpointId) {
-      var sTarget = root.getSessionTarget(sessionId)
+      var sTarget = root.getSessionTarget(canonicalId)
       root.currentSessionTarget = {
         endpointId: sTarget.endpointId,
         profileName: sTarget.profileName
@@ -603,14 +619,19 @@ Panel {
     }
 
     // Instant tab switch from sessionCache (0ms latency, no empty flicker!)
-    if (root.sessionCache[sessionId] && Array.isArray(root.sessionCache[sessionId].messages)) {
+    if (root.sessionCache[canonicalId] && Array.isArray(root.sessionCache[canonicalId].messages)) {
+      root.messages = root.sessionCache[canonicalId].messages
+    } else if (root.sessionCache[sessionId] && Array.isArray(root.sessionCache[sessionId].messages)) {
       root.messages = root.sessionCache[sessionId].messages
     } else {
       root.messages = []
     }
 
     // Restore active in-flight stream state for this session if streaming
-    if (root.activeStreams && root.activeStreams[sessionId]) {
+    if (root.activeStreams && root.activeStreams[canonicalId]) {
+      root.currentStreamingContent = root.activeStreams[canonicalId].streamingContent || ""
+      root.currentToolEvents = root.activeStreams[canonicalId].toolEvents || []
+    } else if (root.activeStreams && root.activeStreams[sessionId]) {
       root.currentStreamingContent = root.activeStreams[sessionId].streamingContent || ""
       root.currentToolEvents = root.activeStreams[sessionId].toolEvents || []
     } else {
@@ -627,12 +648,14 @@ Panel {
     getSessionProc.buf = ""
     getSessionProc.errBuf = ""
     var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
-    var selTarget = root.getSessionTarget(sessionId)
+    var selTarget = root.getSessionTarget(canonicalId)
     if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
     if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
-    getArgs.push("--", sessionId)
+    getArgs.push("--", canonicalId)
     getSessionProc.command = getArgs
     getSessionProc.running = true
+
+    root.ensureSessionVisible(canonicalId)
 
     Qt.callLater(function() {
       if (promptInput) promptInput.forceActiveFocus()
@@ -1170,6 +1193,25 @@ Panel {
       .slice(0, maxLen || 128)
   }
 
+  function isValidSessionId(id) {
+    if (!id || typeof id !== "string") return false
+    if (id.length > 128) return false
+    if (id.indexOf("..") !== -1 || id.indexOf("/") !== -1 || id.indexOf("\\") !== -1) return false
+    return /^[A-Za-z0-9:._-]+$/.test(id)
+  }
+
+  function ensureSessionVisible(sessionId) {
+    Qt.callLater(function() {
+      if (!sessionListView || !root.filteredSessions) return
+      for (var idx = 0; idx < root.filteredSessions.length; idx++) {
+        if (root.filteredSessions[idx].id === sessionId || root.filteredSessions[idx].raw_id === sessionId) {
+          sessionListView.positionViewAtIndex(idx, ListView.Contain)
+          break
+        }
+      }
+    })
+  }
+
   function postCompletionNotification(content, isError, sessionId) {
     if (isError ? !root.setting("notifyOnError", true) : !root.setting("notifyOnComplete", true)) {
       return
@@ -1178,7 +1220,7 @@ Panel {
     var targetId = sessionId || root.selectedSessionId || ""
     var targetTitle = ""
     for (var i = 0; i < root.sessions.length; i++) {
-      if (root.sessions[i].id === targetId) {
+      if (root.sessions[i].id === targetId || root.sessions[i].raw_id === targetId) {
         targetTitle = root.sessions[i].title
         break
       }
@@ -1193,14 +1235,21 @@ Panel {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
-    Quickshell.execDetached([
+    var notifyArgs = [
       "/usr/bin/notify-send",
       "-a", root.sanitizePlain(root.serverName, 40) || "Hermes",
-      "-u", isError ? "critical" : "normal",
-      "--",
-      root.sanitizePlain(title, 80),
-      preview
-    ])
+      "-u", isError ? "critical" : "normal"
+    ]
+    var cleanTargetId = targetId ? String(targetId).trim() : ""
+    if (root.isValidSessionId(cleanTargetId)) {
+      var execArgv = ["quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
+        "com.mwhuss.omarchy-hermes-api", "openSession", cleanTargetId]
+      notifyArgs.push("--hint=string:omarchy-exec-argv:" + JSON.stringify(execArgv))
+    }
+    notifyArgs.push("--")
+    notifyArgs.push(root.sanitizePlain(title, 80))
+    notifyArgs.push(preview)
+    Quickshell.execDetached(notifyArgs)
   }
 
   IpcHandler {
@@ -1249,27 +1298,25 @@ Panel {
       root.isAgentPickerOpen = !root.isAgentPickerOpen
       return "ok"
     }
-    function isValidSessionId(id) {
-      if (!id || typeof id !== "string") return false
-      if (id.length > 128) return false
-      if (id.indexOf("..") !== -1 || id.indexOf("/") !== -1 || id.indexOf("\\") !== -1) return false
-      return /^[A-Za-z0-9:._-]+$/.test(id)
-    }
     function openSession(sessionId: string): string {
       root.open()
+      root.isSettingsOpen = false
       if (sessionId && String(sessionId).trim() !== "") {
         var cleanId = String(sessionId).trim()
-        if (!isValidSessionId(cleanId)) return "invalid-session-id"
-        if (root.selectedSessionId !== cleanId) {
-          root.selectSession(cleanId)
-        } else {
-          if (!getSessionProc.running) {
-            getSessionProc.buf = ""
-            getSessionProc.errBuf = ""
-            getSessionProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", cleanId]
-            getSessionProc.running = true
+        if (!root.isValidSessionId(cleanId)) return "invalid-session-id"
+        root.searchQuery = ""
+        for (var s = 0; s < root.sessions.length; s++) {
+          if (root.sessions[s].id === cleanId || root.sessions[s].raw_id === cleanId) {
+            var sItem = root.sessions[s]
+            if (root.activeTarget && root.activeTarget.endpointId !== "all") {
+              if (sItem.endpoint_id && sItem.endpoint_id !== root.activeTarget.endpointId) {
+                root.activeTarget = { endpointId: "all", profileName: "" }
+              }
+            }
+            break
           }
         }
+        root.selectSession(cleanId)
       }
       return "ok"
     }
@@ -2302,10 +2349,10 @@ Panel {
                   width: sessionListView.width
                   height: 52
                   radius: 6
-                  color: root.selectedSessionId === modelData.id
+                  color: (root.selectedSessionId === modelData.id || root.selectedSessionId === modelData.raw_id)
                     ? root.cardHover
                     : (delegateMouse.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
-                  border.color: root.selectedSessionId === modelData.id ? root.accent : "transparent"
+                  border.color: (root.selectedSessionId === modelData.id || root.selectedSessionId === modelData.raw_id) ? root.accent : "transparent"
 
                   MouseArea {
                     id: delegateMouse
