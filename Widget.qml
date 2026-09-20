@@ -3183,7 +3183,7 @@ Panel {
                             cursorVisible: false
                             selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
                             selectedTextColor: root.foreground
-                            onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
+                            onSelectedTextChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                           }
                         }
                       }
@@ -3216,7 +3216,7 @@ Panel {
                           selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
                           selectedTextColor: root.foreground
                           onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
-                          onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
+                          onSelectedTextChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                         }
                       }
 
@@ -3347,7 +3347,7 @@ Panel {
                         selectionColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
                         selectedTextColor: root.foreground
                         onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
-                        onSelectionChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
+                        onSelectedTextChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                       }
                     }
                   }
