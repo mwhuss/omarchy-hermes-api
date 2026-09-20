@@ -1314,6 +1314,180 @@ function testUrlGuard() {
   console.log(`  ✔ url-guard allowlist passed (${allowed.length} allowed, ${rejected.length + rejectedHardened.length} rejected)`);
 }
 
+function testSanitizeMarkdown() {
+  console.log('Testing: sanitizeMarkdown trust boundary (SSRF and rich-text neutralization)...');
+  const guardPath = path.join(__dirname, '..', 'bin', 'url-guard.js');
+  const guard = require(guardPath);
+
+  assert(typeof guard.sanitizeMarkdown === 'function', 'sanitizeMarkdown should be a function');
+
+  // 1. Hostile Markdown images: allowed web URLs are converted to safe links [Image: alt](url),
+  // preventing automatic image fetching/decoding during document layout.
+  assert.strictEqual(
+    guard.sanitizeMarkdown('Look at ![Architecture](https://example.com/arch.png) here'),
+    'Look at [Image: Architecture](https://example.com/arch.png) here',
+    'inline image with allowed web url should become a link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![Logo](<https://example.com/logo.png>)'),
+    '[Image: Logo](https://example.com/logo.png)',
+    'inline image with angle brackets should become a link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![Chart](https://example.com/chart.png "Quarterly Profits")'),
+    '[Image: Chart](https://example.com/chart.png)',
+    'inline image with title should become a link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!   [Chart](https://example.com/chart.png)'),
+    '[Image: Chart](https://example.com/chart.png)',
+    'inline image with whitespace between ! and [ should become a link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\![Chart](https://example.com/chart.png)'),
+    '[Image: Chart](https://example.com/chart.png)',
+    'escaped inline image marker should become a link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![](https://example.com/empty-alt.png)'),
+    '[Image](https://example.com/empty-alt.png)',
+    'image with empty alt should become [Image](url)'
+  );
+
+  // 2. Hostile Markdown images: dangerous/local schemes (file:, data:, javascript:, custom protocols)
+  // are completely stripped of URL target, preventing local file reading and SSRF.
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![Passwd](file:///etc/passwd)'),
+    '[Image: Passwd]',
+    'image pointing to file:// must have url stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![](data:image/png;base64,AAAA)'),
+    '[Image]',
+    'image with data: URI must have url stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![Internal](http://169.254.169.254/latest/meta-data/)'),
+    '[Image: Internal](http://169.254.169.254/latest/meta-data/)',
+    'image with http url becomes link, harmless during layout (clicked links route through openSafeUrl)'
+  );
+
+  // 3. Reference-style images: converted to reference links, preventing image resolution
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![Ref Diagram][diagram]\n\n[diagram]: https://example.com/d.png'),
+    '[Image: Ref Diagram][diagram]\n\n[diagram]: https://example.com/d.png',
+    'reference image should become reference link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![shortcut]\n\n[shortcut]: https://example.com/s.png'),
+    '[Image: shortcut]\n\n[shortcut]: https://example.com/s.png',
+    'shortcut reference image should become reference link'
+  );
+
+  // 4. Raw HTML and XML rich-text constructs: stripped to prevent unsolicited network requests
+  assert.strictEqual(
+    guard.sanitizeMarkdown('Check <img src="http://127.0.0.1:8642/leak.png"> this out'),
+    'Check  this out',
+    'raw html img tag must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('Check <img\n  src="http://leak.com"\n  alt="test"> here'),
+    'Check  here',
+    'multiline html img tag must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<style>@import "evil.css";</style>B'),
+    'AB',
+    'raw html style block must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<script>alert(1)</script>B'),
+    'AB',
+    'raw html script block must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<svg><image xlink:href="http://evil.com/leak"></svg>B'),
+    'AB',
+    'raw svg block must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<object data="http://evil.com/leak"></object>B'),
+    'AB',
+    'raw object block must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<iframe src="http://evil.com/leak"></iframe>B'),
+    'AB',
+    'raw iframe block must be stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('A<!-- <img src="evil.com"> -->B'),
+    'AB',
+    'html comments must be stripped'
+  );
+
+  // 5. HTML links & autolinks: safe web links converted to markdown, dangerous links neutralized
+  assert.strictEqual(
+    guard.sanitizeMarkdown('<a href="https://example.com">Visit Site</a>'),
+    '[Visit Site](https://example.com)',
+    'safe html <a> tag should convert to markdown link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('<a href="file:///etc/passwd">Secret</a>'),
+    'Secret',
+    'dangerous html <a> href must be dropped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('Read <https://example.com> now'),
+    'Read [https://example.com](https://example.com) now',
+    'safe web autolink should convert to markdown link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('Read <file:///etc/passwd> now'),
+    'Read  now',
+    'dangerous autolink must be stripped'
+  );
+
+  // 6. Code blocks and inline code spans: preserved untouched
+  const codeBlock = '```html\n<img src="http://example.com/cat.png">\n```';
+  assert.strictEqual(
+    guard.sanitizeMarkdown(codeBlock),
+    codeBlock,
+    'code blocks with html must remain literal and untouched'
+  );
+  const inlineCode = 'Use `<img src="foo.png">` tag';
+  assert.strictEqual(
+    guard.sanitizeMarkdown(inlineCode),
+    inlineCode,
+    'inline code with html must remain literal and untouched'
+  );
+  const dollarCode = '```bash\necho $HOME && echo $1 && echo $$\n```';
+  assert.strictEqual(
+    guard.sanitizeMarkdown(dollarCode),
+    dollarCode,
+    'code blocks with dollar signs must be restored literally'
+  );
+
+  // 7. Standard Markdown formatting: fully preserved
+  const standardMd = '# Title\n**bold** *italic* `code` ~~strike~~\n- item 1\n- item 2\n> blockquote\n[regular link](https://example.com)';
+  assert.strictEqual(
+    guard.sanitizeMarkdown(standardMd),
+    standardMd,
+    'standard Markdown formatting and safe links must be preserved'
+  );
+
+  // 8. Robustness & boundaries: null, undefined, non-strings, oversized input
+  assert.strictEqual(guard.sanitizeMarkdown(null), '');
+  assert.strictEqual(guard.sanitizeMarkdown(undefined), '');
+  assert.strictEqual(guard.sanitizeMarkdown(123), '');
+  assert.strictEqual(guard.sanitizeMarkdown(''), '');
+  const hugeInput = 'A'.repeat(2 * 1024 * 1024);
+  const sanitizedHuge = guard.sanitizeMarkdown(hugeInput);
+  assert.strictEqual(sanitizedHuge.length, 1024 * 1024, 'oversized input must be capped safely');
+
+  console.log('  ✔ sanitizeMarkdown trust boundary verified across 25 hostile & regression cases');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -1340,6 +1514,7 @@ async function runAllTests() {
     await testMockSseStreamWithCustomEvents();
     await testManifest();
     testUrlGuard();
+    testSanitizeMarkdown();
     await testSettings();
     await testMonograms();
     await testListTargetsAndActiveTarget();

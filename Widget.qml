@@ -3196,7 +3196,7 @@ Panel {
                           id: msgText
                           anchors.fill: parent
                           anchors.margins: 8
-                          text: String(modelData.content || "").trim()
+                          text: modelData.role === "assistant" ? UrlGuard.sanitizeMarkdown(String(modelData.content || "").trim()) : String(modelData.content || "").trim()
                           font.family: root.fontFamily
                           font.pixelSize: 11
                           color: root.foreground
@@ -3320,7 +3320,7 @@ Panel {
                         anchors.fill: parent
                         anchors.margins: 8
                         visible: !!root.currentStreamingContent
-                        text: String(root.currentStreamingContent || "").trim()
+                        text: UrlGuard.sanitizeMarkdown(String(root.currentStreamingContent || "").trim())
                         font.family: root.fontFamily
                         font.pixelSize: 11
                         color: root.foreground
