@@ -68,9 +68,29 @@ OMARCHY_SHELL_PROJECT=/path/to/your/shell bin/hermes-toggle
 
 ### Hyprland keybind
 
-Add a global binding to `~/.config/hypr/hyprland.conf` (using the installed plugin path that `bin/install.sh` symlinks, or the repo path for a dev checkout):
+#### Omarchy (Lua)
 
+Add a global keybinding to `~/.config/hypr/bindings.lua` (using the installed plugin path that `bin/install.sh` symlinks, or the repo path for a dev checkout):
+
+```lua
+o.bind("SUPER + H", "Hermes Flyout", "~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle")
 ```
+
+##### 🤖 Agent Prompt (Copy & Paste)
+
+If you use an AI assistant (such as Antigravity or Claude Code), you can copy and paste this prompt to configure it automatically:
+
+```text
+Add a keybinding for Super+H to toggle the Hermes API flyout in ~/.config/hypr/bindings.lua using:
+o.bind("SUPER + H", "Hermes Flyout", "~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle")
+Then run `hyprctl reload` and verify `hyprctl configerrors`.
+```
+
+#### Standard Hyprland (.conf)
+
+If using a standard/upstream Hyprland configuration (`~/.config/hypr/hyprland.conf`):
+
+```ini
 bind = $mainMod, H, exec, ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle
 ```
 
