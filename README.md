@@ -38,6 +38,72 @@ Configure endpoints and multiplexed agent profiles directly in the flyout settin
 
 ---
 
+## ⌨️ Global Hotkey & CLI
+
+Summon or dismiss the flyout from anywhere — a global window-manager hotkey, a launcher (Walker/Rofi), or a plain shell — via the Quickshell IPC command and a lightweight wrapper script. No QML changes are required; the `open`/`close`/`toggle` IPC endpoints are already exposed by the plugin.
+
+### Raw IPC command
+
+```bash
+quickshell -p /usr/share/omarchy/shell ipc call com.mwhuss.omarchy-hermes-api toggle
+```
+
+Replace `toggle` with `open` or `close` for explicit control.
+
+### Wrapper script
+
+`bin/hermes-toggle` wraps the IPC call with a verb argument (default `toggle`):
+
+```bash
+bin/hermes-toggle            # toggle (default)
+bin/hermes-toggle open       # force open
+bin/hermes-toggle close      # force close
+```
+
+For non-stock installs (e.g. a dev checkout running the shell from a different path), override the project path:
+
+```bash
+OMARCHY_SHELL_PROJECT=/path/to/your/shell bin/hermes-toggle
+```
+
+### Hyprland keybind
+
+#### Omarchy (Lua)
+
+Add a global keybinding to `~/.config/hypr/bindings.lua` (using the installed plugin path that `bin/install.sh` symlinks, or the repo path for a dev checkout):
+
+```lua
+o.bind("SUPER + H", "Hermes Flyout", "~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle")
+```
+
+##### 🤖 Agent Prompt (Copy & Paste)
+
+If you use an AI assistant (such as Antigravity or Claude Code), you can copy and paste this prompt to configure it automatically:
+
+```text
+Add a keybinding for Super+H to toggle the Hermes API flyout in ~/.config/hypr/bindings.lua using:
+o.bind("SUPER + H", "Hermes Flyout", "~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle")
+Then run `hyprctl reload` and verify `hyprctl configerrors`.
+```
+
+#### Standard Hyprland (.conf)
+
+If using a standard/upstream Hyprland configuration (`~/.config/hypr/hyprland.conf`):
+
+```ini
+bind = $mainMod, H, exec, ~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api/bin/hermes-toggle
+```
+
+### Launcher (Walker/Rofi)
+
+Add the plugin's `bin/` directory to your `PATH` to invoke `hermes-toggle` directly from a launcher.
+
+### Troubleshooting
+
+If the command errors, the plugin must be loaded in the shell (see Quick Start) and the `quickshell` CLI must be on `PATH`.
+
+---
+
 ## ⚙️ Configuration
 
 Endpoints and agent profiles can be managed directly in the application using the **Settings** menu (gear icon ⚙️ in the upper right corner of the flyout panel).
