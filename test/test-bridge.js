@@ -77,8 +77,8 @@ function startMockServer() {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           messages: [
-            { role: 'user', content: 'Hello' },
-            { role: 'assistant', content: 'Mock response' }
+            { role: 'user', content: 'Hello', reasoning: null },
+            { role: 'assistant', content: 'Mock response', reasoning: 'Mock reasoning trace' }
           ]
         }));
         return;
@@ -294,7 +294,17 @@ async function testGetSession() {
     assert.strictEqual(json.success, true, 'json.success should be true');
     assert(json.session, 'json.session must exist');
     assert(Array.isArray(json.session.messages), 'json.session.messages must be an array');
-    console.log(`  ✔ get-session passed for ${targetId} (${json.session.messages.length} messages loaded)`);
+
+    // Reasoning pass-through: assistant message carries reasoning, user message is null
+    const assistantMsg = json.session.messages.find(m => m.role === 'assistant');
+    const userMsg = json.session.messages.find(m => m.role === 'user');
+    assert(assistantMsg, 'get-session output should include an assistant message');
+    assert.strictEqual(assistantMsg.reasoning, 'Mock reasoning trace',
+      'assistant message should carry reasoning pass-through');
+    assert(userMsg, 'get-session output should include a user message');
+    assert.strictEqual(userMsg.reasoning, null,
+      'user message reasoning should be null');
+    console.log(`  ✔ get-session passed for ${targetId} (${json.session.messages.length} messages loaded, reasoning pass-through verified)`);
 
     const resDelimiter = await runBridge(['get-session', '--', targetId]);
     assert.strictEqual(resDelimiter.code, 0, `Exit code should be 0, got ${resDelimiter.code}`);
@@ -1232,6 +1242,113 @@ async function testBoundedResponse() {
   }
 }
 
+async function testMockSseStreamWithReasoningDeltas() {
+  console.log('Testing: SSE stream with reasoning_content deltas (OpenAI wire format)...');
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      // (a) reasoning delta
+      res.write('data: {"choices":[{"delta":{"reasoning_content":"Let me think about this..."}}]}\n\n');
+      // (b) content delta
+      res.write('data: {"choices":[{"delta":{"content":"Here is the answer."}}]}\n\n');
+      // (c) done
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${port}`,
+      HERMES_API_SERVER_PORT: String(port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const lines = res.stdout.trim().split('\n').filter(Boolean);
+    const events = lines.map(l => JSON.parse(l));
+
+    const startEvent = events.find(e => e.type === 'start');
+    assert(startEvent, 'start event should be emitted');
+
+    const reasoningEvent = events.find(e => e.type === 'reasoning_delta');
+    assert(reasoningEvent, 'reasoning_delta event should be emitted for reasoning_content');
+    assert.strictEqual(reasoningEvent.content, 'Let me think about this...');
+    assert.strictEqual(reasoningEvent.session_id, startEvent.session_id,
+      'reasoning_delta session_id should match the start event');
+
+    const contentEvent = events.find(e => e.type === 'delta');
+    assert(contentEvent, 'content delta event should be emitted');
+    assert.strictEqual(contentEvent.content, 'Here is the answer.');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'done event should be emitted');
+    assert.strictEqual(doneEvent.full_reasoning, 'Let me think about this...',
+      'done.full_reasoning should equal the accumulated reasoning');
+    assert.strictEqual(doneEvent.full_text, 'Here is the answer.');
+
+    console.log('  ✔ SSE reasoning_content deltas parsed and full_reasoning accumulated');
+  } finally {
+    server.close();
+  }
+}
+
+async function testMockSseStreamReasoningCustomEvent() {
+  console.log('Testing: SSE stream with hermes.reasoning.delta custom event...');
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write('event: hermes.reasoning.delta\n');
+      res.write('data: {"text":"custom event reasoning"}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${port}`,
+      HERMES_API_SERVER_PORT: String(port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const lines = res.stdout.trim().split('\n').filter(Boolean);
+    const events = lines.map(l => JSON.parse(l));
+
+    const reasoningEvent = events.find(e => e.type === 'reasoning_delta');
+    assert(reasoningEvent, 'reasoning_delta event should be emitted for hermes.reasoning.delta');
+    assert.strictEqual(reasoningEvent.content, 'custom event reasoning');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'done event should be emitted');
+    assert.strictEqual(doneEvent.full_reasoning, 'custom event reasoning',
+      'done.full_reasoning should carry the custom-event reasoning');
+
+    console.log('  ✔ hermes.reasoning.delta custom event parsed and accumulated');
+  } finally {
+    server.close();
+  }
+}
+
 async function testDeleteCreatedSessions() {
   console.log(`Testing: delete-session command and cleanup of created test sessions...`);
   assert(createdSessionIds.length > 0, 'Should have tracked sessions created during testing');
@@ -1544,6 +1661,8 @@ async function runAllTests() {
     testCliOptionsParser();
     await testZeroDependencies();
     await testMockSseStreamWithCustomEvents();
+    await testMockSseStreamWithReasoningDeltas();
+    await testMockSseStreamReasoningCustomEvent();
     await testManifest();
     testUrlGuard();
     testSanitizeMarkdown();
