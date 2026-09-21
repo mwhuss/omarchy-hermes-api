@@ -3686,8 +3686,14 @@ Panel {
             // ------------------------- Bottom Prompt Input Area
             Rectangle {
               Layout.fillWidth: true
-              height: 52
+              Layout.preferredHeight: Math.min(120, Math.max(52, promptInput.implicitHeight + 16))
               color: root.cardBg
+
+              onHeightChanged: {
+                if (height > 52 && root.isNearBottom) {
+                  root.scrollToBottomInstantly()
+                }
+              }
 
               RowLayout {
                 anchors.fill: parent
@@ -3701,55 +3707,83 @@ Panel {
                   color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
                   border.color: promptInput.activeFocus ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
 
-                  TextInput {
-                    id: promptInput
+                  ScrollView {
                     anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    verticalAlignment: TextInput.AlignVCenter
-                    font.family: root.fontFamily
-                    font.pixelSize: 11
-                    color: root.foreground
                     clip: true
-                    focus: true
-                    onAccepted: root.sendCurrentMessage()
+                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
-                    Keys.onPressed: function(event) {
-                      if (event.key === Qt.Key_Up) {
-                        if (root.navigatePromptHistory(true)) {
-                          event.accepted = true
-                        }
-                      } else if (event.key === Qt.Key_Down) {
-                        if (root.navigatePromptHistory(false)) {
-                          event.accepted = true
-                        }
-                      } else if (event.key === Qt.Key_Escape) {
-                        if (root.isConfirmingDeleteSession) {
-                          root.isConfirmingDeleteSession = false
-                        } else if (root.isEditingTitle) {
-                          root.isEditingTitle = false
-                        } else {
-                          root.close()
-                        }
-                        event.accepted = true
-                      }
-                    }
-
-                    Text {
-  textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      text: "Ask " + root.serverName + " a question or assign a task..."
+                    TextArea {
+                      id: promptInput
+                      width: parent ? parent.width : undefined
+                      leftPadding: 10
+                      rightPadding: 10
+                      topPadding: 8
+                      bottomPadding: 8
+                      wrapMode: TextArea.Wrap
+                      verticalAlignment: TextArea.AlignTop
                       font.family: root.fontFamily
                       font.pixelSize: 11
-                      color: root.dimText
-                      visible: !parent.text && !parent.activeFocus
+                      color: root.foreground
+                      focus: true
+
+                      onTextChanged: {
+                        if (length > 32768) {
+                          remove(32768, length)
+                        }
+                      }
+
+                      Keys.onPressed: function(event) {
+                        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                          // Shift+Enter: not accepted, so TextArea inserts the newline
+                          if (!(event.modifiers & Qt.ShiftModifier)) {
+                            root.sendCurrentMessage()
+                            event.accepted = true
+                          }
+                        } else if (event.key === Qt.Key_Up) {
+                          var atTop = promptInput.cursorPosition === 0 || promptInput.cursorRectangle.y <= promptInput.topPadding + 2
+                          if (atTop) {
+                            if (root.navigatePromptHistory(true)) {
+                              event.accepted = true
+                            }
+                          }
+                        } else if (event.key === Qt.Key_Down) {
+                          var atBottom = promptInput.cursorPosition === promptInput.length || (promptInput.cursorRectangle.y + promptInput.cursorRectangle.height) >= (promptInput.topPadding + promptInput.contentHeight - 2)
+                          if (atBottom) {
+                            if (root.navigatePromptHistory(false)) {
+                              event.accepted = true
+                            }
+                          }
+                        } else if (event.key === Qt.Key_Escape) {
+                          if (root.isConfirmingDeleteSession) {
+                            root.isConfirmingDeleteSession = false
+                          } else if (root.isEditingTitle) {
+                            root.isEditingTitle = false
+                          } else {
+                            root.close()
+                          }
+                          event.accepted = true
+                        }
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.top: parent.top
+                        anchors.topMargin: 8
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10
+                        text: "Ask " + root.serverName + " a question or assign a task..."
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        color: root.dimText
+                        visible: !parent.text && !parent.activeFocus
+                      }
                     }
                   }
                 }
 
                 // Send or Stop button
                 Rectangle {
+                  Layout.alignment: Qt.AlignBottom
                   width: 34
                   height: 34
                   radius: 6

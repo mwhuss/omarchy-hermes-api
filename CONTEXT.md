@@ -28,6 +28,10 @@ _Avoid_: Prompt stack, command history, shell history
 Unsubmitted text typed into the prompt input field, temporarily retained in memory while cycling through Prompt History.
 _Avoid_: Unsent message, scratchpad, input buffer
 
+**Prompt Input**:
+The multi-line, auto-expanding text field at the bottom of the flyout where the user composes a prompt for the active Hermes Session. Grows with content up to a fixed ceiling, then scrolls internally.
+_Avoid_: Prompt box, chat bar, message field
+
 **Session Header**:
 The control and metadata bar above the chat stream displaying the active Hermes Session's title, model, and session actions.
 _Avoid_: Title bar, top bar, chat header
