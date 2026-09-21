@@ -1487,6 +1487,7 @@ async function handleGetSettings() {
           seeded: false,
           settings: {
             activeTarget: data.activeTarget || { endpointId: 'all', profileName: 'all' },
+            hideCronSessions: data.hideCronSessions === true,
             endpoints: data.endpoints
           }
         }));
@@ -1497,6 +1498,14 @@ async function handleGetSettings() {
     }
   }
 
+  console.log(JSON.stringify({
+    success: true,
+    seeded: true,
+    settings: buildSeededSettings()
+  }));
+}
+
+function buildSeededSettings() {
   // Seed default settings from active environment / ~/.hermes/.env
   const hermesEnv = loadHermesEnvFile();
   const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
@@ -1504,8 +1513,9 @@ async function handleGetSettings() {
   const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
   const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
 
-  const seededSettings = {
+  return {
     activeTarget: { endpointId: 'all', profileName: 'all' },
+    hideCronSessions: false,
     endpoints: [
       {
         id: 'endpoint-default',
@@ -1517,12 +1527,6 @@ async function handleGetSettings() {
       }
     ]
   };
-
-  console.log(JSON.stringify({
-    success: true,
-    seeded: true,
-    settings: seededSettings
-  }));
 }
 
 async function handleSaveSettings(rawInput) {
@@ -1687,8 +1691,17 @@ async function handleSaveSettings(rawInput) {
     }
   }
 
+  // Preserve the hideCronSessions preference when the payload omits it
+  // (the endpoint Save button only sends { endpoints })
+  let hideCronSessions = data.hideCronSessions === true;
+  if (data.hideCronSessions === undefined) {
+    const existing = loadSettingsFile();
+    hideCronSessions = !!(existing && existing.hideCronSessions === true);
+  }
+
   const cleanSettings = {
     activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
+    hideCronSessions,
     endpoints: validatedEndpoints
   };
 
@@ -1703,6 +1716,42 @@ async function handleSaveSettings(rawInput) {
     console.log(JSON.stringify({
       success: false,
       error: `Failed to write settings file: ${err.message}`
+    }));
+  }
+}
+
+async function handleSetHideCron(value) {
+  const hide = value === 'true';
+  const settingsPath = getSettingsPath();
+  let settings;
+  if (fs.existsSync(settingsPath)) {
+    settings = loadSettingsFile();
+    if (!settings) {
+      // Fail closed: the file exists but is unreadable or invalid.
+      // Never overwrite it with a fresh object — that would wipe the
+      // user's endpoints (or a file they are mid-repair on).
+      console.log(JSON.stringify({
+        success: false,
+        error: 'Settings file is invalid; fix or remove it before changing this preference'
+      }));
+      return;
+    }
+  } else {
+    // No settings file yet: seed the same defaults get-settings would
+    // return, so the first toggle doesn't require a manual save first.
+    settings = buildSeededSettings();
+  }
+  settings.hideCronSessions = hide;
+  try {
+    writeAtomicSettings(settings);
+    console.log(JSON.stringify({
+      success: true,
+      hideCronSessions: hide
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to save hideCronSessions: ${err.message}`
     }));
   }
 }
@@ -1764,6 +1813,10 @@ async function main() {
       await handleSaveSettings(rest[1]);
       break;
 
+    case 'set-hide-cron':
+      await handleSetHideCron(rest[1]);
+      break;
+
     case 'stream-chat': {
       let sessionId = null;
       let prompt = '';
@@ -1814,7 +1867,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron`
       }));
       process.exit(1);
   }
