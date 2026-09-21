@@ -3342,7 +3342,7 @@ Panel {
             // ------------------------- Bottom Prompt Input Area
             Rectangle {
               Layout.fillWidth: true
-              height: Math.min(120, Math.max(52, promptInput.implicitHeight + 16))
+              Layout.preferredHeight: Math.min(120, Math.max(52, promptInput.implicitHeight + 16))
               color: root.cardBg
 
               onHeightChanged: {
@@ -3439,7 +3439,7 @@ Panel {
 
                 // Send or Stop button
                 Rectangle {
-                  Layout.alignment: Qt.AlignTop
+                  Layout.alignment: Qt.AlignBottom
                   width: 34
                   height: 34
                   radius: 6
