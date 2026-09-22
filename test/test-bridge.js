@@ -86,7 +86,9 @@ function startMockServer() {
         res.end(JSON.stringify({
           messages: [
             { role: 'user', content: 'Hello', reasoning: null },
-            { role: 'assistant', content: 'Mock response', reasoning: 'Mock reasoning trace' }
+            { role: 'assistant', content: 'Mock response', reasoning: 'Mock reasoning trace' },
+            { role: 'session_meta', content: null },
+            { role: 'system', content: null }
           ]
         }));
         return;
@@ -312,6 +314,15 @@ async function testGetSession() {
     assert(userMsg, 'get-session output should include a user message');
     assert.strictEqual(userMsg.reasoning, null,
       'user message reasoning should be null');
+
+    // Issue #51: session_meta records are filtered out and null content never serializes to "null"
+    assert(!json.session.messages.some(m => m.role === 'session_meta'),
+      'session_meta must be filtered out');
+    assert(!json.session.messages.some(m => m.content === 'null'),
+      'no message content may be the literal string "null"');
+    const sysMsg = json.session.messages.find(m => m.role === 'system');
+    assert(sysMsg && sysMsg.content === null,
+      'null content must serialize to null, not "null"');
     console.log(`  ✔ get-session passed for ${targetId} (${json.session.messages.length} messages loaded, reasoning pass-through verified)`);
 
     const resDelimiter = await runBridge(['get-session', '--', targetId]);
