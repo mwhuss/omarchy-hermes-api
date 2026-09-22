@@ -3645,7 +3645,7 @@ Panel {
 
                         Text {
   textFormat: Text.PlainText
-                          text: root.serverName + " is thinking..."
+                          text: root.getSessionAgentName(root.currentSessionItem()) + " is thinking..."
                           font.family: root.fontFamily
                           font.pixelSize: 11
                           color: root.dimText
