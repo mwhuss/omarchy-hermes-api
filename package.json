@@ -4,7 +4,7 @@
   "description": "Omarchy menu bar plugin for managing and interacting with Hermes Agent sessions",
   "main": "bin/hermes-bridge.js",
   "scripts": {
-    "test": "node test/test-bridge.js",
+    "test": "node test/test-bridge.js && node test/test-oha-fix-gate.js",
     "test:live": "HERMES_LIVE=1 node test/test-bridge.js",
     "reload": "omarchy-restart-shell",
     "install-plugin": "bash bin/install.sh"
