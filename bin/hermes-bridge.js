@@ -1381,7 +1381,9 @@ async function handleListTargets() {
       name: 'default',
       isDefault: true,
       targetId: `${ep.id}:default`,
-      displayName: `${ep.name} (default)`,
+      agentName: ep.name,
+      displayName: ep.name,
+      endpointName: ep.name,
       monogram: getAgentMonogram(ep.name),
       color: getAgentColor(ep.name)
     }];
@@ -1396,7 +1398,9 @@ async function handleListTargets() {
             name: pName,
             isDefault: false,
             targetId: `${ep.id}:${pName}`,
-            displayName: `${ep.name} • ${pName}`,
+            agentName: pName,
+            displayName: pName,
+            endpointName: ep.name,
             monogram: getAgentMonogram(pName),
             color: getAgentColor(pName)
           });
@@ -1412,7 +1416,9 @@ async function handleListTargets() {
             name: lp.name,
             isDefault: false,
             targetId: `${ep.id}:${lp.name}`,
-            displayName: `${ep.name} • ${lp.name}`,
+            agentName: lp.name,
+            displayName: lp.name,
+            endpointName: ep.name,
             monogram: getAgentMonogram(lp.name),
             color: getAgentColor(lp.name)
           });

@@ -128,6 +128,25 @@ Panel {
     return root.serverName || "Hermes"
   }
 
+  function currentPromptAgentName() {
+    if (root.selectedSessionId) {
+      var s = root.currentSessionItem() || { id: root.selectedSessionId }
+      var agentName = root.getSessionAgentName(s)
+      if (agentName && agentName !== "Hermes") return agentName
+    }
+    if (root.currentSessionTarget) {
+      if (root.currentSessionTarget.profileName && root.currentSessionTarget.profileName !== "default") {
+        return root.currentSessionTarget.profileName
+      }
+      if (root.currentSessionTarget.endpointId) {
+        return root.getEndpointDisplayName(root.currentSessionTarget.endpointId)
+      }
+    }
+    var targetName = root.activeTargetDisplayName()
+    if (targetName && targetName !== "Hermes") return targetName
+    return root.serverName || "Hermes"
+  }
+
   function getSessionAgentDisplayName(s) {
     if (!s) return root.serverName || "Hermes"
     var epName = s.endpoint_name || getEndpointDisplayName(s.endpoint_id)
@@ -491,7 +510,8 @@ Panel {
                 endpointName: ep.name,
                 profileName: prof.name,
                 isDefault: prof.isDefault === true,
-                displayName: prof.displayName || (ep.name + " (" + prof.name + ")"),
+                displayName: prof.displayName || (prof.isDefault ? ep.name : prof.name),
+                agentName: prof.agentName || (prof.isDefault ? ep.name : prof.name),
                 monogram: prof.monogram || root.getMonogram(prof.isDefault ? ep.name : prof.name),
                 color: prof.color || root.getAgentColor(prof.isDefault ? ep.name : prof.name),
                 connected: ep.connected === true,
@@ -3020,7 +3040,7 @@ Panel {
 
                     Text {
   textFormat: Text.PlainText
-                      text: "How can " + root.serverName + " help you today?"
+                      text: "How can " + root.currentPromptAgentName() + " help you today?"
                       font.family: root.fontFamily
                       font.pixelSize: 14
                       font.weight: Font.DemiBold
@@ -3896,7 +3916,7 @@ Panel {
                         anchors.topMargin: 8
                         anchors.left: parent.left
                         anchors.leftMargin: 10
-                        text: "Ask " + root.serverName + " a question or assign a task..."
+                        text: "Ask " + root.currentPromptAgentName() + " a question or assign a task..."
                         font.family: root.fontFamily
                         font.pixelSize: 11
                         color: root.dimText
@@ -5487,8 +5507,8 @@ Panel {
                           Layout.alignment: Qt.AlignVCenter
                         }
                         Text {
-  textFormat: Text.PlainText
-                          text: agentTargetCard.modelData.endpointName + " • " + (agentTargetCard.modelData.isDefault ? "default profile" : agentTargetCard.modelData.profileName)
+                          textFormat: Text.PlainText
+                          text: agentTargetCard.modelData.endpointName
                           font.family: root.fontFamily
                           font.pixelSize: 9
                           color: root.dimText
