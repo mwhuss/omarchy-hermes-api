@@ -95,4 +95,7 @@ _Avoid_: trusted link, validated URL, safe link
 The standalone, resizable `FloatingWindow` surface owned by the bar widget that renders the same session interface as the bar flyout; mutually exclusive with the flyout and sharing all live plugin state.
 _Avoid_: detached panel, second instance, popup window
 
+**Session Metadata Record**:
+A non-dialogue lifecycle/metadata message stored by the Hermes backend with `role: "session_meta"` and `content: null` (e.g. session close/archive markers). Excluded from the chat stream and never rendered as a bubble.
+_Avoid_: system message, log entry, null bubble
 
