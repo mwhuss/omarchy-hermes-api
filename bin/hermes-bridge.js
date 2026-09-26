@@ -758,7 +758,7 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       rawMessages = sessionObj.messages || [];
     }
 
-    const messages = rawMessages.slice(0, 1000).filter(Boolean).map(m => {
+    const messages = rawMessages.filter(m => m && m.role !== 'session_meta').slice(0, 1000).map(m => {
       let parsedToolCalls = [];
       if (Array.isArray(m.tool_calls)) {
         parsedToolCalls = m.tool_calls.slice(0, 50).map(tc => {
@@ -796,7 +796,7 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
 
       return {
         role: m.role || 'user',
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        content: typeof m.content === 'string' ? m.content : (m.content != null ? JSON.stringify(m.content) : null),
         tool_preview: toolFormatting ? toolFormatting.preview : null,
         tool_formatted: toolFormatting ? toolFormatting.full : null,
         timestamp: m.timestamp ? (typeof m.timestamp === 'number' ? new Date(m.timestamp * 1000).toISOString() : m.timestamp) : null,

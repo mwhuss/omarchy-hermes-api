@@ -3477,7 +3477,7 @@ Panel {
 
                       // User / Assistant Bubble Card
                       Rectangle {
-                        visible: modelData.role !== "tool" && (modelData.content && String(modelData.content).trim() !== "")
+                        visible: (modelData.role === "user" || modelData.role === "assistant") && (modelData.content && String(modelData.content).trim() !== "")
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
                         Layout.maximumWidth: parent.width * 0.88
                         implicitWidth: msgText.implicitWidth + 20
