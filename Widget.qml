@@ -1984,6 +1984,46 @@ Panel {
     }
   }
 
+  component CopyButton: Rectangle {
+    id: copyBtn
+    property string text: ""
+    property bool copied: false
+    width: 18
+    height: 18
+    radius: 4
+    color: copyBtnHover.hovered ? root.cardHover : "transparent"
+
+    Timer {
+      id: copyTimer
+      interval: 1500
+      repeat: false
+      onTriggered: copyBtn.copied = false
+    }
+
+    Text {
+      anchors.centerIn: parent
+      textFormat: Text.PlainText
+      text: copyBtn.copied ? "\uF00C" : "\uF0C5"
+      font.family: root.fontFamily
+      font.pixelSize: 10
+      color: copyBtn.copied ? "#10B981" : (copyBtnHover.hovered ? root.foreground : root.subtleText)
+    }
+
+    HoverHandler {
+      id: copyBtnHover
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: {
+        Quickshell.execDetached(["/usr/bin/wl-copy", "--", String(copyBtn.text || "")])
+        copyBtn.copied = true
+        copyTimer.restart()
+      }
+    }
+  }
+
   Component.onDestruction: {
     if (statusProc.running) statusProc.signal(15)
     if (listSessionsProc.running) listSessionsProc.signal(15)
@@ -3325,11 +3365,23 @@ Panel {
                             NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
                           }
 
+                          HoverHandler {
+                            id: toolCallHover
+                          }
+
                           MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            hoverEnabled: true
                             onClicked: toolCallBox.expanded = !toolCallBox.expanded
+                          }
+
+                          CopyButton {
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.topMargin: 4
+                            anchors.rightMargin: 24
+                            visible: toolCallHover.hovered
+                            text: String(modelData.summary || "")
                           }
 
                           ColumnLayout {
@@ -3405,11 +3457,23 @@ Panel {
                           NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
                         }
 
+                        HoverHandler {
+                          id: toolResultHover
+                        }
+
                         MouseArea {
                           anchors.fill: parent
                           cursorShape: Qt.PointingHandCursor
-                          hoverEnabled: true
                           onClicked: toolResultBox.expanded = !toolResultBox.expanded
+                        }
+
+                        CopyButton {
+                          anchors.top: parent.top
+                          anchors.right: parent.right
+                          anchors.topMargin: 4
+                          anchors.rightMargin: 24
+                          visible: toolResultHover.hovered
+                          text: modelData.tool_formatted || String(modelData.content || "").trim()
                         }
 
                         ColumnLayout {
@@ -3477,6 +3541,7 @@ Panel {
 
                       // User / Assistant Bubble Card
                       Rectangle {
+                        id: assistantBubble
                         visible: (modelData.role === "user" || modelData.role === "assistant") && (modelData.content && String(modelData.content).trim() !== "")
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
                         Layout.maximumWidth: parent.width * 0.88
@@ -3485,6 +3550,10 @@ Panel {
                         radius: 8
                         color: modelData.role === "user" ? root.userBubbleBg : root.cardBg
                         border.color: modelData.role === "user" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3) : "transparent"
+
+                        HoverHandler {
+                          id: assistantBubbleHover
+                        }
 
                         TextEdit {
                           id: msgText
@@ -3504,6 +3573,15 @@ Panel {
                           selectedTextColor: root.foreground
                           onLinkActivated: function(link) { UrlGuard.openSafeUrl(link) }
                           onSelectedTextChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
+                        }
+
+                        CopyButton {
+                          anchors.top: parent.top
+                          anchors.right: parent.right
+                          anchors.margins: 5
+                          z: 2
+                          visible: modelData.role === "assistant" && assistantBubbleHover.hovered
+                          text: String(modelData.content || "").trim()
                         }
                       }
 
