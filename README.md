@@ -35,17 +35,22 @@ Configure endpoints and multiplexed agent profiles directly in the flyout settin
 - **Custom System Prompts**: Expandable per-session system prompt configuration directly from the empty chat view.
 - **Desktop Completion Notifications**: Dispatched by the widget via `notify-send` when Hermes finishes a response or encounters an error; clicking a notification opens the flyout on the session that generated it (per ADR 0005).
 - **In-App Settings UI**: Configure servers, ports, API keys, and multiplexed profiles directly inside the UI without editing files or restarting.
+- **Standalone App Window**: Detach Hermes from the status bar into a persistent, resizable native desktop window (`FloatingWindow`) via the header detach button (`\uF2D0`) or IPC. Preserves all active session state, prompt drafts, Session Cache, and background streams with native window-manager tiling and floating.
 
 ---
 
 ## ⌨️ Global Hotkey & CLI
 
-Summon or dismiss the flyout from anywhere — a global window-manager hotkey, a launcher (Walker/Rofi), or a plain shell — via the Quickshell IPC command and a lightweight wrapper script. No QML changes are required; the `open`/`close`/`toggle` IPC endpoints are already exposed by the plugin.
+Summon or dismiss the flyout from anywhere — a global window-manager hotkey, a launcher (Walker/Rofi), or a plain shell — via the Quickshell IPC command and a lightweight wrapper script. The plugin exposes `open`, `close`, `toggle`, and `toggleAppWindow` IPC endpoints.
 
 ### Raw IPC command
 
 ```bash
+# Toggle status bar flyout
 quickshell -p /usr/share/omarchy/shell ipc call com.mwhuss.omarchy-hermes-api toggle
+
+# Toggle standalone app window
+quickshell -p /usr/share/omarchy/shell ipc call com.mwhuss.omarchy-hermes-api toggleAppWindow
 ```
 
 Replace `toggle` with `open` or `close` for explicit control.
@@ -55,9 +60,10 @@ Replace `toggle` with `open` or `close` for explicit control.
 `bin/hermes-toggle` wraps the IPC call with a verb argument (default `toggle`):
 
 ```bash
-bin/hermes-toggle            # toggle (default)
-bin/hermes-toggle open       # force open
-bin/hermes-toggle close      # force close
+bin/hermes-toggle                 # toggle flyout (default)
+bin/hermes-toggle open            # force open flyout
+bin/hermes-toggle close           # force close flyout
+bin/hermes-toggle toggleAppWindow # toggle standalone app window
 ```
 
 For non-stock installs (e.g. a dev checkout running the shell from a different path), override the project path:

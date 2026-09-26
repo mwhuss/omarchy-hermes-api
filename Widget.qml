@@ -45,6 +45,35 @@ Panel {
   property var currentSessionTarget: ({ endpointId: "", profileName: "" })
   property bool isTargetDropdownOpen: false
   property bool isAgentPickerOpen: false
+  property bool appWindowOpen: false
+  property var promptInput: null
+  property var chatFlick: null
+  property var sessionListView: null
+  property real newSessionBtnX: 200
+
+  function openAppWindow() {
+    if (root.promptInput) root.promptDraft = root.promptInput.text
+    root.appWindowOpen = true
+    root.close()
+    root.isConfirmingDeleteSession = false
+    root.isConfirmingDeleteEndpoint = false
+    root.isTargetDropdownOpen = false
+    root.isAgentPickerOpen = false
+    root.settingsErrorMessage = ""
+    root.settingsSuccessMessage = ""
+    triggerRefresh()
+    root.loadSettings()
+    Qt.callLater(function() { if (!root.isSettingsOpen && root.promptInput) root.promptInput.forceActiveFocus() })
+  }
+
+  function closeAppWindow() {
+    if (root.promptInput) root.promptDraft = root.promptInput.text
+    root.appWindowOpen = false
+  }
+
+  function toggleAppWindow() {
+    root.appWindowOpen ? root.closeAppWindow() : root.openAppWindow()
+  }
 
   function getMonogram(name) {
     if (!name || typeof name !== "string") return "H"
@@ -379,7 +408,7 @@ Panel {
   Timer {
     id: fastPollTimer
     interval: 3000
-    running: root.opened
+    running: root.opened || root.appWindowOpen
     repeat: true
     onTriggered: {
       root.refreshSessions()
@@ -410,6 +439,10 @@ Panel {
 
   onOpenedChanged: {
     if (opened) {
+      if (root.appWindowOpen) {
+        if (root.promptInput) root.promptDraft = root.promptInput.text
+        root.appWindowOpen = false
+      }
       root.isConfirmingDeleteSession = false
       root.isConfirmingDeleteEndpoint = false
       root.isTargetDropdownOpen = false
@@ -1301,6 +1334,10 @@ Panel {
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
+    function toggleAppWindow(): string {
+      root.toggleAppWindow()
+      return "ok"
+    }
     function newSession(): string {
       root.open()
       root.startNewSession()
@@ -2114,53 +2151,14 @@ Panel {
 
   // ------------------------------------------------------------- Popup Dialog Panel
 
-  KeyboardPanel {
-    id: panel
-    anchorItem: button
-    owner: root
-    bar: root.bar
-    open: root.opened
-    focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(720))
-    contentHeight: panel.fittedContentHeight(Style.space(560), Style.space(640))
-
-    PanelKeyCatcher {
-      id: keyCatcher
-      anchors.fill: parent
-      blocked: Boolean(promptInput && promptInput.activeFocus)
-      onMoveRequested: function(dx, dy) {
-        if (dy < 0) {
-          root.navigatePromptHistory(true)
-          if (promptInput) promptInput.forceActiveFocus()
-        } else if (dy > 0) {
-          root.navigatePromptHistory(false)
-          if (promptInput) promptInput.forceActiveFocus()
-        }
-      }
-      onCloseRequested: {
-        if (root.isTargetDropdownOpen) {
-          root.isTargetDropdownOpen = false
-        } else if (root.isAgentPickerOpen) {
-          root.isAgentPickerOpen = false
-        } else if (root.isSettingsOpen) {
-          root.isSettingsOpen = false
-          root.loadSettings()
-        } else if (root.isConfirmingDeleteSession) {
-          root.isConfirmingDeleteSession = false
-        } else if (root.isEditingTitle) {
-          root.isEditingTitle = false
-        } else {
-          root.close()
-        }
-      }
-
-      ColumnLayout {
-        anchors.fill: parent
-        spacing: 0
+  Component {
+    id: panelHeader
 
         // ------------------------- Top Header
-        Rectangle {
-          Layout.fillWidth: true
+    Rectangle {
+      id: headerRect
+      property bool showDetachButton: !root.appWindowOpen
+      Layout.fillWidth: true
           height: 48
           color: root.cardBg
           radius: 8
@@ -2249,6 +2247,8 @@ Panel {
             // New Session Button
             Rectangle {
               id: newSessionBtn
+              onXChanged: root.newSessionBtnX = x
+              Component.onCompleted: root.newSessionBtnX = x
               height: 28
               radius: 6
               color: newHover.containsMouse ? root.cardHover : root.cardBg
@@ -2334,6 +2334,38 @@ Panel {
               }
             }
 
+            // Open in App Window button
+            Rectangle {
+              visible: headerRect.showDetachButton
+              width: 28
+              height: 28
+              radius: 6
+              color: detachHover.containsMouse ? root.cardHover : "transparent"
+
+              MouseArea {
+                id: detachHover
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.openAppWindow()
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                anchors.centerIn: parent
+                text: "\uF2D0" // Open in App Window
+                font.family: root.fontFamily
+                font.pixelSize: 12
+                color: detachHover.containsMouse ? root.foreground : root.dimText
+              }
+
+              PanelToolTip {
+                visible: detachHover.containsMouse
+                text: "Open in App Window"
+                fontFamily: root.fontFamily
+              }
+            }
+
             // Settings button
             Rectangle {
               width: 28
@@ -2369,16 +2401,19 @@ Panel {
           }
         }
 
-        PanelSeparator {
-          Layout.fillWidth: true
-          foreground: root.foreground
-        }
+  }
+
+  Component {
+    id: chatBody
+
+    Item {
+      id: chatBodyRoot
+      anchors.fill: parent
 
         // ------------------------- Dual-Pane Body
-        RowLayout {
-          visible: !root.isSettingsOpen
-          Layout.fillWidth: true
-          Layout.fillHeight: true
+      RowLayout {
+        visible: !root.isSettingsOpen
+        anchors.fill: parent
           spacing: 0
 
           // ==================== Left Drawer: Session List
@@ -2440,6 +2475,8 @@ Panel {
               // Session list scroll
               ListView {
                 id: sessionListView
+                Component.onCompleted: root.sessionListView = sessionListView
+                Component.onDestruction: if (root.sessionListView === sessionListView) root.sessionListView = null
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
@@ -2893,6 +2930,8 @@ Panel {
             // Chat Viewport
             Flickable {
               id: chatFlick
+              Component.onCompleted: root.chatFlick = chatFlick
+              Component.onDestruction: if (root.chatFlick === chatFlick) root.chatFlick = null
               Layout.fillWidth: true
               Layout.fillHeight: true
               contentWidth: width
@@ -3714,6 +3753,14 @@ Panel {
 
                     TextArea {
                       id: promptInput
+                      Component.onCompleted: {
+                        root.promptInput = promptInput
+                        if (root.promptDraft && !promptInput.text) {
+                          promptInput.text = root.promptDraft
+                          promptInput.cursorPosition = promptInput.text.length
+                        }
+                      }
+                      Component.onDestruction: if (root.promptInput === promptInput) root.promptInput = null
                       width: parent ? parent.width : undefined
                       leftPadding: 10
                       rightPadding: 10
@@ -3759,7 +3806,7 @@ Panel {
                           } else if (root.isEditingTitle) {
                             root.isEditingTitle = false
                           } else {
-                            root.close()
+                            root.appWindowOpen ? root.closeAppWindow() : root.close()
                           }
                           event.accepted = true
                         }
@@ -3820,10 +3867,9 @@ Panel {
         }
 
         // ==================== Settings View (Master-Detail)
-        RowLayout {
-          visible: root.isSettingsOpen
-          Layout.fillWidth: true
-          Layout.fillHeight: true
+      RowLayout {
+        visible: root.isSettingsOpen
+        anchors.fill: parent
           spacing: 0
 
           // -------------------- Left Sidebar: Endpoints List
@@ -4876,12 +4922,15 @@ Panel {
             }
           }
         }
-      }
 
       // ------------------------- Target Dropdown Overlay
       Item {
         id: targetDropdownOverlay
-        anchors.fill: parent
+        anchors.top: parent.top
+        anchors.topMargin: -49
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
         z: 100
         visible: root.isTargetDropdownOpen
 
@@ -5167,7 +5216,11 @@ Panel {
       // ------------------------- Agent Picker Popover Overlay
       Item {
         id: agentPickerOverlay
-        anchors.fill: parent
+        anchors.top: parent.top
+        anchors.topMargin: -49
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
         z: 100
         visible: root.isAgentPickerOpen
 
@@ -5178,7 +5231,7 @@ Panel {
 
         Rectangle {
           id: agentPickerCard
-          x: Math.max(10, Math.min(parent.width - width - 10, newSessionBtn.x - 100))
+          x: Math.max(10, Math.min(parent.width - width - 10, (root.newSessionBtnX || 200) - 100))
           y: 46
           width: 310
           implicitHeight: Math.min(420, agentPickerContent.implicitHeight + 16)
@@ -5380,6 +5433,146 @@ Panel {
               }
             }
           }
+        }
+      }    }
+  }
+
+  KeyboardPanel {
+    id: panel
+    anchorItem: button
+    owner: root
+    bar: root.bar
+    open: root.opened
+    focusTarget: keyCatcher
+    contentWidth: panel.fittedContentWidth(Style.space(720))
+    contentHeight: panel.fittedContentHeight(Style.space(560), Style.space(640))
+
+    PanelKeyCatcher {
+      id: keyCatcher
+      anchors.fill: parent
+      blocked: Boolean(root.promptInput && root.promptInput.activeFocus)
+      onMoveRequested: function(dx, dy) {
+        if (dy < 0) {
+          root.navigatePromptHistory(true)
+          if (root.promptInput) root.promptInput.forceActiveFocus()
+        } else if (dy > 0) {
+          root.navigatePromptHistory(false)
+          if (root.promptInput) root.promptInput.forceActiveFocus()
+        }
+      }
+      onCloseRequested: {
+        if (root.isTargetDropdownOpen) {
+          root.isTargetDropdownOpen = false
+        } else if (root.isAgentPickerOpen) {
+          root.isAgentPickerOpen = false
+        } else if (root.isSettingsOpen) {
+          root.isSettingsOpen = false
+          root.loadSettings()
+        } else if (root.isConfirmingDeleteSession) {
+          root.isConfirmingDeleteSession = false
+        } else if (root.isEditingTitle) {
+          root.isEditingTitle = false
+        } else {
+          root.close()
+        }
+      }
+
+      ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        Loader {
+          Layout.fillWidth: true
+          sourceComponent: panelHeader
+        }
+
+        PanelSeparator {
+          Layout.fillWidth: true
+          foreground: root.foreground
+        }
+
+        Loader {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          sourceComponent: chatBody
+          active: root.opened
+        }
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- Standalone Application Window
+
+  FloatingWindow {
+    id: appWindow
+    visible: root.appWindowOpen
+    title: root.serverName + " Agent"
+    implicitWidth: 800
+    implicitHeight: 650
+    minimumSize: Qt.size(560, 480)
+    color: root.background
+
+    onVisibleChanged: {
+      if (!visible && root.appWindowOpen) {
+        root.closeAppWindow()
+      }
+    }
+
+    FocusScope {
+      id: windowKeyCatcher
+      anchors.fill: parent
+      focus: true
+
+      Keys.onPressed: function(event) {
+        if (root.promptInput && root.promptInput.activeFocus) {
+          return
+        }
+        if (event.key === Qt.Key_Escape) {
+          if (root.isTargetDropdownOpen) {
+            root.isTargetDropdownOpen = false
+          } else if (root.isAgentPickerOpen) {
+            root.isAgentPickerOpen = false
+          } else if (root.isSettingsOpen) {
+            root.isSettingsOpen = false
+            root.loadSettings()
+          } else if (root.isConfirmingDeleteSession) {
+            root.isConfirmingDeleteSession = false
+          } else if (root.isEditingTitle) {
+            root.isEditingTitle = false
+          } else {
+            root.closeAppWindow()
+          }
+          event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+          root.navigatePromptHistory(true)
+          if (root.promptInput) root.promptInput.forceActiveFocus()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Down) {
+          root.navigatePromptHistory(false)
+          if (root.promptInput) root.promptInput.forceActiveFocus()
+          event.accepted = true
+        }
+      }
+
+      ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        Loader {
+          Layout.fillWidth: true
+          sourceComponent: panelHeader
+        }
+
+        PanelSeparator {
+          Layout.fillWidth: true
+          foreground: root.foreground
+        }
+
+        Loader {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          sourceComponent: chatBody
+          active: root.appWindowOpen
         }
       }
     }
