@@ -3909,19 +3909,27 @@ Panel {
                           event.accepted = true
                         }
                       }
+                    }
+                  }
 
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.top: parent.top
-                        anchors.topMargin: 8
-                        anchors.left: parent.left
-                        anchors.leftMargin: 10
-                        text: "Ask " + root.currentPromptAgentName() + " a question or assign a task..."
-                        font.family: root.fontFamily
-                        font.pixelSize: 11
-                        color: root.dimText
-                        visible: !parent.text && !parent.activeFocus
-                      }
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.right: parent.right
+                    anchors.rightMargin: 10
+                    elide: Text.ElideRight
+                    text: "Ask " + root.currentPromptAgentName() + " a question or assign a task..."
+                    font.family: root.fontFamily
+                    font.pixelSize: 11
+                    color: root.dimText
+                    visible: !promptInput.text && !promptInput.activeFocus
+
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.IBeamCursor
+                      onClicked: promptInput.forceActiveFocus()
                     }
                   }
                 }
