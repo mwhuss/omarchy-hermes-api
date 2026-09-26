@@ -651,14 +651,12 @@ async function testListTargetsAndActiveTarget() {
   const firstProf = firstTarget.profiles[0];
   assert.strictEqual(firstProf.name, 'default', 'first profile must be default');
   assert.strictEqual(firstProf.displayName, firstTarget.name, 'default profile displayName must be clean endpoint name without (default)');
-  assert.strictEqual(firstProf.agentName, firstTarget.name, 'default profile agentName must match endpoint name');
   assert.strictEqual(firstProf.endpointName, firstTarget.name, 'default profile endpointName must match endpoint name');
   assert.strictEqual(firstProf.isDefault, true, 'default profile isDefault must be true');
 
   for (let i = 1; i < firstTarget.profiles.length; i++) {
     const prof = firstTarget.profiles[i];
     assert.strictEqual(prof.displayName, prof.name, 'named profile displayName must be clean profile name without endpoint prefix');
-    assert.strictEqual(prof.agentName, prof.name, 'named profile agentName must match profile name');
     assert.strictEqual(prof.endpointName, firstTarget.name, 'named profile endpointName must match endpoint name');
     assert.strictEqual(prof.isDefault, false, 'named profile isDefault must be false');
   }

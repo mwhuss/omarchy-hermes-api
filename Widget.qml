@@ -135,16 +135,11 @@ Panel {
       if (agentName && agentName !== "Hermes") return agentName
     }
     if (root.currentSessionTarget) {
-      if (root.currentSessionTarget.profileName && root.currentSessionTarget.profileName !== "default") {
-        return root.currentSessionTarget.profileName
-      }
-      if (root.currentSessionTarget.endpointId) {
-        return root.getEndpointDisplayName(root.currentSessionTarget.endpointId)
-      }
+      var p = root.currentSessionTarget.profileName
+      return (p && p !== "default") ? p : root.getEndpointDisplayName(root.currentSessionTarget.endpointId)
     }
     var targetName = root.activeTargetDisplayName()
-    if (targetName && targetName !== "Hermes") return targetName
-    return root.serverName || "Hermes"
+    return (targetName && targetName !== "Hermes") ? targetName : (root.serverName || "Hermes")
   }
 
   function getSessionAgentDisplayName(s) {
@@ -511,7 +506,6 @@ Panel {
                 profileName: prof.name,
                 isDefault: prof.isDefault === true,
                 displayName: prof.displayName || (prof.isDefault ? ep.name : prof.name),
-                agentName: prof.agentName || (prof.isDefault ? ep.name : prof.name),
                 monogram: prof.monogram || root.getMonogram(prof.isDefault ? ep.name : prof.name),
                 color: prof.color || root.getAgentColor(prof.isDefault ? ep.name : prof.name),
                 connected: ep.connected === true,
@@ -3925,12 +3919,6 @@ Panel {
                     font.pixelSize: 11
                     color: root.dimText
                     visible: !promptInput.text && !promptInput.activeFocus
-
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.IBeamCursor
-                      onClicked: promptInput.forceActiveFocus()
-                    }
                   }
                 }
 
