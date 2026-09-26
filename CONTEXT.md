@@ -91,3 +91,8 @@ _Avoid_: Bot selector, profile chooser, model picker
 A link whose URI scheme is on the strict allowlist (`https://`, `http://`) and whose host is well-formed (no userinfo, no control characters, ≤ 2048 chars) and is therefore permitted to be handed to `Qt.openUrlExternally()`. Activated Markdown links outside the allowlist (`file:`, `data:`, `qrc:`, `javascript:`, custom/relative) are silently ignored.
 _Avoid_: trusted link, validated URL, safe link
 
+**App Window**:
+The standalone, resizable `FloatingWindow` surface owned by the bar widget that renders the same session interface as the bar flyout; mutually exclusive with the flyout and sharing all live plugin state.
+_Avoid_: detached panel, second instance, popup window
+
+
