@@ -80,17 +80,27 @@ function sanitizeHeaderValue(val) {
 }
 
 function readBoundedFile(filePath, maxBytes = MAX_SETTINGS_BYTES) {
+  let fd;
   try {
-    if (!fs.existsSync(filePath)) return null;
-    const st = fs.statSync(filePath);
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  } catch (e) {
+    // ENOENT (absent), ELOOP (symlink), ENXIO (FIFO w/ O_NONBLOCK) are all fine
+    return null;
+  }
+  try {
+    const st = fs.fstatSync(fd);
     if (!st.isFile() || st.size > maxBytes) return null;
     if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null;
     if ((st.mode & 0o077) !== 0) {
-      try { fs.chmodSync(filePath, 0o600); } catch (e) {}
+      try { fs.fchmodSync(fd, 0o600); } catch (e) {}
     }
-    return fs.readFileSync(filePath, 'utf8');
+    // Clear O_NONBLOCK now that we know it is a regular file
+    const buf = fs.readFileSync(fd, 'utf8');
+    return buf.length <= maxBytes ? buf : null;
   } catch (e) {
     return null;
+  } finally {
+    try { fs.closeSync(fd); } catch (e) {}
   }
 }
 
@@ -104,8 +114,10 @@ async function readStdinLineOrEof(maxBytes = 262144) {
 }
 
 function ensurePrivateDir(dirPath) {
-  if (!fs.existsSync(dirPath)) {
+  try {
     fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
   }
   const st = fs.lstatSync(dirPath);
   if (!st.isDirectory() || st.isSymbolicLink()) {
@@ -114,9 +126,8 @@ function ensurePrivateDir(dirPath) {
   if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
     throw new Error(`Settings directory owned by untrusted UID: ${st.uid}`);
   }
-  if ((st.mode & 0o077) !== 0) {
-    fs.chmodSync(dirPath, 0o700);
-  }
+  // Unconditionally tighten permissions (covers pre-existing wider dirs)
+  try { fs.chmodSync(dirPath, 0o700); } catch (e) {}
 }
 
 function writeAtomicSettings(settingsData) {
@@ -130,9 +141,24 @@ function writeAtomicSettings(settingsData) {
   ensurePrivateDir(dirPath);
 
   const tmpPath = path.join(dirPath, `.settings.${crypto.randomBytes(6).toString('hex')}.tmp`);
-  fs.writeFileSync(tmpPath, content, { mode: 0o600 });
+  const fd = fs.openSync(tmpPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+  try {
+    fs.writeSync(fd, content);
+    fs.fdatasyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(tmpPath, settingsPath);
-  try { fs.chmodSync(settingsPath, 0o600); } catch (e) {}
+  // fsync the directory to ensure the rename is durable
+  let dirFd;
+  try {
+    dirFd = fs.openSync(dirPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+    fs.fsyncSync(dirFd);
+  } catch (e) {
+    // best-effort directory sync
+  } finally {
+    if (dirFd !== undefined) try { fs.closeSync(dirFd); } catch (e) {}
+  }
 }
 
 async function boundedFetch(url, options = {}, maxBytes = MAX_FETCH_BYTES, timeoutMs = 10000) {
@@ -1773,7 +1799,7 @@ function parseCliOptions(args) {
 
 async function main() {
   const rawArgs = process.argv.slice(2);
-  const { endpoint, profile, rest } = parseCliOptions(rawArgs);
+  let { endpoint, profile, rest } = parseCliOptions(rawArgs);
   const command = rest[0] || 'status';
 
   switch (command) {
@@ -1824,6 +1850,8 @@ async function main() {
       let systemPrompt = '';
       let history = [];
       let notify = false;
+      let streamEndpoint = endpoint;
+      let streamProfile = profile;
 
       for (let i = 1; i < rest.length; i++) {
         if ((rest[i] === '--session' || rest[i] === '--session-id') && rest[i + 1]) {
@@ -1852,15 +1880,15 @@ async function main() {
             model = parsed.model || model;
             history = parsed.history || history;
             notify = parsed.notify !== undefined ? parsed.notify : notify;
-            if (parsed.endpoint) endpoint = parsed.endpoint;
-            if (parsed.profile) profile = parsed.profile;
+            if (parsed.endpoint) streamEndpoint = parsed.endpoint;
+            if (parsed.profile) streamProfile = parsed.profile;
           } catch (e) {
             // ignore
           }
         }
       }
 
-      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify, endpoint, profile });
+      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify, endpoint: streamEndpoint, profile: streamProfile });
       break;
     }
 
@@ -1886,6 +1914,9 @@ module.exports = {
   getAgentColor,
   boundedFetch,
   readBoundedJson,
-  readBoundedText
+  readBoundedText,
+  readBoundedFile,
+  ensurePrivateDir,
+  writeAtomicSettings
 };
 

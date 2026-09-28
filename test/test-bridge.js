@@ -1438,6 +1438,58 @@ async function testMockSseStreamReasoningCustomEvent() {
   }
 }
 
+async function testSecurityHardening() {
+  console.log('Testing: bridge security hardening (H-1 to H-3)...');
+  const { readBoundedFile, ensurePrivateDir } = require(bridgePath);
+
+  const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-sec-test-'));
+  try {
+    // H-1: readBoundedFile
+    const validFile = path.join(testDir, 'valid.txt');
+    fs.writeFileSync(validFile, 'hello hermes', { mode: 0o600 });
+    const content = readBoundedFile(validFile, 1024);
+    assert.strictEqual(content, 'hello hermes', 'readBoundedFile should read normal file');
+
+    // Reject non-existent file
+    const missing = readBoundedFile(path.join(testDir, 'missing.txt'), 1024);
+    assert.strictEqual(missing, null, 'readBoundedFile should return null for missing file');
+
+    // Reject oversized file
+    const oversized = readBoundedFile(validFile, 5);
+    assert.strictEqual(oversized, null, 'readBoundedFile should return null for oversized file');
+
+    // Reject symlink (O_NOFOLLOW)
+    const symlinkPath = path.join(testDir, 'symlink.txt');
+    fs.symlinkSync(validFile, symlinkPath);
+    const symlinkResult = readBoundedFile(symlinkPath, 1024);
+    assert.strictEqual(symlinkResult, null, 'readBoundedFile must reject symlinks via O_NOFOLLOW');
+
+    // H-2: ensurePrivateDir
+    const privSubdir = path.join(testDir, 'private-sub');
+    ensurePrivateDir(privSubdir);
+    const privStat = fs.lstatSync(privSubdir);
+    assert.strictEqual(privStat.isDirectory(), true, 'ensurePrivateDir should create directory');
+    assert.strictEqual(privStat.mode & 0o777, 0o700, 'ensurePrivateDir should set 0700 mode');
+
+    // Tighten existing wider directory
+    const wideSubdir = path.join(testDir, 'wide-sub');
+    fs.mkdirSync(wideSubdir, { mode: 0o755 });
+    ensurePrivateDir(wideSubdir);
+    const wideStat = fs.lstatSync(wideSubdir);
+    assert.strictEqual(wideStat.mode & 0o777, 0o700, 'ensurePrivateDir should tighten existing directory to 0700');
+
+    // Reject symlink directory
+    const symlinkDir = path.join(testDir, 'symlink-dir');
+    fs.symlinkSync(privSubdir, symlinkDir);
+    assert.throws(() => ensurePrivateDir(symlinkDir), /not a regular directory/, 'ensurePrivateDir must reject symlinked directories');
+
+    console.log('  ✔ readBoundedFile rejects symlinks and bounds bytes');
+    console.log('  ✔ ensurePrivateDir enforces 0700 permissions and rejects symlinks');
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+}
+
 async function testDeleteCreatedSessions() {
   console.log(`Testing: delete-session command and cleanup of created test sessions...`);
   assert(createdSessionIds.length > 0, 'Should have tracked sessions created during testing');
@@ -1776,6 +1828,7 @@ async function runAllTests() {
     await testNon2xxSlowDripErrorBody();
     await testNon2xxNormalErrorBody();
     await testBoundedResponse();
+    await testSecurityHardening();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
