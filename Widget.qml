@@ -1010,13 +1010,18 @@ Panel {
 
   function startSessionStreamProcess(targetSessionId, payload) {
     if (!targetSessionId) return
+    var jsonPayload = payload ? (JSON.stringify(payload) + "\n") : ""
     var procObj = streamProcessComponent.createObject(root, {
       targetSessionId: targetSessionId,
+      pendingInput: jsonPayload,
       command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"],
       running: true
     })
-    if (payload) {
-      procObj.write(JSON.stringify(payload) + "\n")
+    if (jsonPayload && procObj.pendingInput) {
+      try {
+        procObj.write(procObj.pendingInput)
+        procObj.pendingInput = ""
+      } catch (e) {}
     }
     var updated = Object.assign({}, root.activeStreams)
     updated[targetSessionId] = {
@@ -1644,8 +1649,14 @@ Panel {
     saveSettingsProc.buf = ""
     saveSettingsProc.errBuf = ""
     saveSettingsProc.command = ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
+    saveSettingsProc.pendingInput = JSON.stringify({ endpoints: eps }) + "\n"
     saveSettingsProc.running = true
-    saveSettingsProc.write(JSON.stringify({ endpoints: eps }) + "\n")
+    if (saveSettingsProc.pendingInput) {
+      try {
+        saveSettingsProc.write(saveSettingsProc.pendingInput)
+        saveSettingsProc.pendingInput = ""
+      } catch (e) {}
+    }
   }
 
   // ------------------------------------------------------------- Processes
@@ -1857,9 +1868,16 @@ Panel {
     id: saveSettingsProc
     property string buf: ""
     property string errBuf: ""
+    property string pendingInput: ""
     stdinEnabled: true
     running: false
     command: ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
+    onStarted: {
+      if (saveSettingsProc.pendingInput) {
+        saveSettingsProc.write(saveSettingsProc.pendingInput)
+        saveSettingsProc.pendingInput = ""
+      }
+    }
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -1993,9 +2011,16 @@ Panel {
       id: proc
       property string targetSessionId: ""
       property string errBuf: ""
+      property string pendingInput: ""
       stdinEnabled: true
       running: false
       command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"]
+      onStarted: {
+        if (proc.pendingInput) {
+          proc.write(proc.pendingInput)
+          proc.pendingInput = ""
+        }
+      }
       stdout: SplitParser {
         splitMarker: ""
         property string lineBuf: ""

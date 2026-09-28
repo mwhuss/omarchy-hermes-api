@@ -1799,7 +1799,7 @@ function parseCliOptions(args) {
 
 async function main() {
   const rawArgs = process.argv.slice(2);
-  const { endpoint, profile, rest } = parseCliOptions(rawArgs);
+  let { endpoint, profile, rest } = parseCliOptions(rawArgs);
   const command = rest[0] || 'status';
 
   switch (command) {
@@ -1850,6 +1850,8 @@ async function main() {
       let systemPrompt = '';
       let history = [];
       let notify = false;
+      let streamEndpoint = endpoint;
+      let streamProfile = profile;
 
       for (let i = 1; i < rest.length; i++) {
         if ((rest[i] === '--session' || rest[i] === '--session-id') && rest[i + 1]) {
@@ -1878,15 +1880,15 @@ async function main() {
             model = parsed.model || model;
             history = parsed.history || history;
             notify = parsed.notify !== undefined ? parsed.notify : notify;
-            if (parsed.endpoint) endpoint = parsed.endpoint;
-            if (parsed.profile) profile = parsed.profile;
+            if (parsed.endpoint) streamEndpoint = parsed.endpoint;
+            if (parsed.profile) streamProfile = parsed.profile;
           } catch (e) {
             // ignore
           }
         }
       }
 
-      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify, endpoint, profile });
+      await handleStreamChat({ sessionId, prompt, model, history, systemPrompt, notify, endpoint: streamEndpoint, profile: streamProfile });
       break;
     }
 
