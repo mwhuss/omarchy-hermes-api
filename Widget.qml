@@ -19,6 +19,8 @@ Panel {
   readonly property bool isStreaming: activeStreamCount > 0
   readonly property bool isCurrentSessionStreaming: !!(selectedSessionId && activeStreams && activeStreams[selectedSessionId])
   property var sessionCache: ({})
+  readonly property int maxCachedSessions: 50
+  property var _cacheAccessOrder: []
   property bool isNearBottom: true
   property bool isRefreshing: false
   property bool isEditingTitle: false
@@ -660,8 +662,10 @@ Panel {
     // Instant tab switch from sessionCache (0ms latency, no empty flicker!)
     if (root.sessionCache[canonicalId] && Array.isArray(root.sessionCache[canonicalId].messages)) {
       root.messages = root.sessionCache[canonicalId].messages
+      root.touchSessionCache(canonicalId)
     } else if (root.sessionCache[sessionId] && Array.isArray(root.sessionCache[sessionId].messages)) {
       root.messages = root.sessionCache[sessionId].messages
+      root.touchSessionCache(sessionId)
     } else {
       root.messages = []
     }
@@ -722,7 +726,7 @@ Panel {
           }
           var updatedCache = Object.assign({}, root.sessionCache)
           updatedCache[sid] = cached
-          root.sessionCache = updatedCache
+          root.updateSessionCache(sid, cached)
 
           if (root.selectedSessionId === sid) {
             // Only update root.messages if there is an actual difference to avoid layout churn
@@ -773,9 +777,7 @@ Panel {
 
     if (root.sessionCache[selectedSessionId]) {
       var c = Object.assign({}, root.sessionCache[selectedSessionId], { title: trimmed })
-      var uc = Object.assign({}, root.sessionCache)
-      uc[selectedSessionId] = c
-      root.sessionCache = uc
+      root.updateSessionCache(selectedSessionId, c)
     }
 
     renameSessionProc.buf = ""
@@ -841,9 +843,7 @@ Panel {
     var remaining = sessions.filter(function(s) { return s.id !== sessionId })
     sessions = remaining
 
-    var updatedCache = Object.assign({}, root.sessionCache)
-    delete updatedCache[sessionId]
-    root.sessionCache = updatedCache
+    root.removeSessionFromCache(sessionId)
 
     if (selectedSessionId === sessionId) {
       root.startNewSession()
@@ -969,9 +969,7 @@ Panel {
       title: root.activeSessionTitle || text,
       updated_at: new Date().toISOString()
     })
-    var updatedCache = Object.assign({}, root.sessionCache)
-    updatedCache[targetSessionId] = cached
-    root.sessionCache = updatedCache
+    root.updateSessionCache(targetSessionId, cached)
 
     if (root.selectedSessionId === targetSessionId) {
       root.messages = currentMsgs
@@ -1129,9 +1127,7 @@ Panel {
     })
     cached.messages = msgs
     cached.updated_at = new Date().toISOString()
-    var updatedCache = Object.assign({}, root.sessionCache)
-    updatedCache[targetSessionId] = cached
-    root.sessionCache = updatedCache
+    root.updateSessionCache(targetSessionId, cached)
 
     if (root.selectedSessionId === targetSessionId) {
       root.messages = msgs
@@ -1184,9 +1180,7 @@ Panel {
         reasoning: partialReasoning || null
       })
       cached.messages = msgs
-      var updatedCache = Object.assign({}, root.sessionCache)
-      updatedCache[sid] = cached
-      root.sessionCache = updatedCache
+      root.updateSessionCache(sid, cached)
 
       if (root.selectedSessionId === sid) {
         root.messages = msgs
@@ -1275,6 +1269,55 @@ Panel {
     if (id.length > 128) return false
     if (id.indexOf("..") !== -1 || id.indexOf("/") !== -1 || id.indexOf("\\") !== -1) return false
     return /^[A-Za-z0-9:._-]+$/.test(id)
+  }
+
+  // LRU session cache management: updates an entry and evicts the oldest
+  // non-streaming sessions when the cache exceeds maxCachedSessions.
+  function updateSessionCache(key, value) {
+    if (!key) return
+    var order = root._cacheAccessOrder.slice()
+    var idx = order.indexOf(key)
+    if (idx !== -1) order.splice(idx, 1)
+    order.push(key)
+
+    var cache = Object.assign({}, root.sessionCache)
+    cache[key] = value
+
+    // Evict oldest entries that are not actively streaming
+    var i = 0
+    while (order.length > root.maxCachedSessions && i < order.length) {
+      var candidate = order[i]
+      if (root.activeStreams && root.activeStreams[candidate]) {
+        i++
+        continue
+      }
+      delete cache[candidate]
+      order.splice(i, 1)
+    }
+
+    root._cacheAccessOrder = order
+    root.sessionCache = cache
+  }
+
+  function touchSessionCache(key) {
+    if (!key || !root.sessionCache || !root.sessionCache[key]) return
+    var order = root._cacheAccessOrder.slice()
+    var idx = order.indexOf(key)
+    if (idx !== -1) order.splice(idx, 1)
+    order.push(key)
+    root._cacheAccessOrder = order
+  }
+
+  function removeSessionFromCache(key) {
+    if (!key) return
+    var order = root._cacheAccessOrder.slice()
+    var idx = order.indexOf(key)
+    if (idx !== -1) order.splice(idx, 1)
+    root._cacheAccessOrder = order
+
+    var cache = Object.assign({}, root.sessionCache)
+    delete cache[key]
+    root.sessionCache = cache
   }
 
   function ensureSessionVisible(sessionId) {
@@ -1954,9 +1997,18 @@ Panel {
       running: false
       command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"]
       stdout: SplitParser {
-        onRead: function(line) {
-          if (String(line).length <= 262144) {
-            root.handleStreamEvent(proc.targetSessionId, line)
+        splitMarker: ""
+        property string lineBuf: ""
+        onRead: function(chunk) {
+          lineBuf += chunk
+          if (lineBuf.length > 1048576) { proc.signal(15); lineBuf = ""; return }
+          var lines = lineBuf.split("\n")
+          lineBuf = lines.pop()
+          for (var i = 0; i < lines.length; i++) {
+            var ln = lines[i]
+            if (ln.length > 0 && ln.length <= 262144) {
+              root.handleStreamEvent(proc.targetSessionId, ln)
+            }
           }
         }
       }
@@ -2491,6 +2543,7 @@ Panel {
                   TextInput {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    maximumLength: 256
                     verticalAlignment: TextInput.AlignVCenter
                     font.family: root.fontFamily
                     font.pixelSize: 11
@@ -2897,6 +2950,7 @@ Panel {
                         anchors.fill: parent
                         anchors.leftMargin: 6
                         anchors.rightMargin: 6
+                        maximumLength: 256
                         verticalAlignment: TextInput.AlignVCenter
                         font.family: root.fontFamily
                         font.pixelSize: 11
@@ -3107,6 +3161,7 @@ Panel {
                         id: sysPromptInput
                         anchors.fill: parent
                         anchors.margins: 8
+                        maximumLength: 4096
                         font.family: root.fontFamily
                         font.pixelSize: 11
                         color: root.foreground
@@ -4318,6 +4373,7 @@ Panel {
                         anchors.fill: parent
                         anchors.leftMargin: 8
                         anchors.rightMargin: 8
+                        maximumLength: 256
                         verticalAlignment: TextInput.AlignVCenter
                         font.family: root.fontFamily
                         font.pixelSize: 11
@@ -4366,6 +4422,7 @@ Panel {
                           anchors.fill: parent
                           anchors.leftMargin: 8
                           anchors.rightMargin: 8
+                          maximumLength: 2048
                           verticalAlignment: TextInput.AlignVCenter
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4409,6 +4466,7 @@ Panel {
                           anchors.fill: parent
                           anchors.leftMargin: 8
                           anchors.rightMargin: 8
+                          maximumLength: 5
                           verticalAlignment: TextInput.AlignVCenter
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4458,6 +4516,7 @@ Panel {
                           id: epKeyInput
                           Layout.fillWidth: true
                           Layout.fillHeight: true
+                          maximumLength: 512
                           verticalAlignment: TextInput.AlignVCenter
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4705,6 +4764,7 @@ Panel {
                             TextInput {
                               id: profNameInput
                               anchors.fill: parent
+                              maximumLength: 128
                               verticalAlignment: TextInput.AlignVCenter
                               font.family: root.fontFamily
                               font.pixelSize: 11
@@ -4743,6 +4803,7 @@ Panel {
                             TextInput {
                               id: profKeyInput
                               anchors.fill: parent
+                              maximumLength: 512
                               verticalAlignment: TextInput.AlignVCenter
                               font.family: root.fontFamily
                               font.pixelSize: 11

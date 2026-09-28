@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 set -e
 
 PLUGIN_ID="com.mwhuss.omarchy-hermes-api"
@@ -10,13 +10,13 @@ echo "Source: $SRC_DIR"
 echo "Target: $TARGET_DIR"
 
 # Ensure Node.js 18+ is available
-if ! command -v node >/dev/null 2>&1; then
-  echo "Error: Node.js (>=18.0.0) is required but not found in PATH." >&2
+if ! /usr/bin/node --version >/dev/null 2>&1; then
+  echo "Error: Node.js (>=18.0.0) is required but not found at /usr/bin/node." >&2
   exit 1
 fi
 
-if ! node -e 'process.exit(process.versions.node.split(".")[0] >= 18 ? 0 : 1)' >/dev/null 2>&1; then
-  echo "Error: Node.js version 18 or higher is required (found $(node -v 2>/dev/null))." >&2
+if ! /usr/bin/node -e 'process.exit(process.versions.node.split(".")[0] >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+  echo "Error: Node.js version 18 or higher is required (found $(/usr/bin/node -v 2>/dev/null))." >&2
   exit 1
 fi
 
