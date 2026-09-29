@@ -130,16 +130,13 @@ Panel {
 
   function currentPromptAgentName() {
     if (root.selectedSessionId) {
-      var s = root.currentSessionItem() || { id: root.selectedSessionId }
-      var agentName = root.getSessionAgentName(s)
-      if (agentName && agentName !== "Hermes") return agentName
+      var s = root.getSessionAgentName(root.currentSessionItem() || { id: root.selectedSessionId })
+      if (s && s !== "Hermes") return s
     }
-    if (root.currentSessionTarget) {
-      var p = root.currentSessionTarget.profileName
-      return (p && p !== "default") ? p : root.getEndpointDisplayName(root.currentSessionTarget.endpointId)
-    }
-    var targetName = root.activeTargetDisplayName()
-    return (targetName && targetName !== "Hermes") ? targetName : (root.serverName || "Hermes")
+    var t = root.currentSessionTarget
+    if (t && t.endpointId) return (t.profileName && t.profileName !== "default") ? t.profileName : root.getEndpointDisplayName(t.endpointId)
+    var target = root.activeTargetDisplayName()
+    return (target && target !== "Hermes") ? target : (root.serverName || "Hermes")
   }
 
   function getSessionAgentDisplayName(s) {
