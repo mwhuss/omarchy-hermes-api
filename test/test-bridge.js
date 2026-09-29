@@ -1874,6 +1874,18 @@ function testKeyboardShortcutsAndNavigation() {
     'promptInput must invoke root.handleCommonShortcut(event)'
   );
 
+  // Verify sidebar toggle buttons exist
+  assert.ok(
+    widgetContent.includes('id: drawerCollapseHover') &&
+    widgetContent.slice(widgetContent.indexOf('id: drawerCollapseHover')).includes('root.toggleSessionDrawer()'),
+    'drawerCollapseHover button next to search must invoke root.toggleSessionDrawer()'
+  );
+  assert.ok(
+    widgetContent.includes('id: sidebarToggleHover') &&
+    widgetContent.slice(widgetContent.indexOf('id: sidebarToggleHover')).includes('root.toggleSessionDrawer()'),
+    'sidebarToggleHover button in subheader must invoke root.toggleSessionDrawer()'
+  );
+
   // Verify cycling algorithm logic in isolation
   function simulateCycle(sessions, selectedId, next) {
     if (!sessions || sessions.length === 0) return selectedId;

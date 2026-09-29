@@ -2668,51 +2668,85 @@ Panel {
               anchors.margins: 8
               spacing: 6
 
-              // Search / Filter box
-              Rectangle {
+              // Search / Filter row & Drawer Collapse Button
+              RowLayout {
                 Layout.fillWidth: true
                 height: 30
-                color: root.cardBg
-                radius: 6
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                spacing: 6
 
-                RowLayout {
-                  anchors.fill: parent
-                  anchors.margins: 6
-                  spacing: 6
+                // Search / Filter box
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.fillHeight: true
+                  color: root.cardBg
+                  radius: 6
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
 
-                  Text {
-  textFormat: Text.PlainText
-                    text: "\uF002" // Search icon
-                    font.family: root.fontFamily
-                    font.pixelSize: 10
-                    color: root.dimText
-                  }
-
-                  TextInput {
-                    id: searchTextInput
-                    Component.onCompleted: root.searchInput = searchTextInput
-                    Component.onDestruction: if (root.searchInput === searchTextInput) root.searchInput = null
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    maximumLength: 256
-                    verticalAlignment: TextInput.AlignVCenter
-                    font.family: root.fontFamily
-                    font.pixelSize: 11
-                    color: root.foreground
-                    clip: true
-                    onTextChanged: root.searchQuery = text
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      text: "Search sessions..."
+                      textFormat: Text.PlainText
+                      text: "\uF002" // Search icon
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: root.dimText
+                    }
+
+                    TextInput {
+                      id: searchTextInput
+                      Component.onCompleted: root.searchInput = searchTextInput
+                      Component.onDestruction: if (root.searchInput === searchTextInput) root.searchInput = null
+                      Layout.fillWidth: true
+                      Layout.fillHeight: true
+                      maximumLength: 256
+                      verticalAlignment: TextInput.AlignVCenter
                       font.family: root.fontFamily
                       font.pixelSize: 11
-                      color: root.dimText
-                      visible: !parent.text
+                      color: root.foreground
+                      clip: true
+                      onTextChanged: root.searchQuery = text
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        text: "Search sessions..."
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        color: root.dimText
+                        visible: !parent.text
+                      }
                     }
+                  }
+                }
+
+                // Collapse Sidebar Button
+                Rectangle {
+                  width: 30
+                  height: 30
+                  radius: 6
+                  color: drawerCollapseHover.containsMouse ? root.cardHover : root.cardBg
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                  Layout.alignment: Qt.AlignVCenter
+
+                  MouseArea {
+                    id: drawerCollapseHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleSessionDrawer()
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.centerIn: parent
+                    text: "\uF0C9" // Bars / menu icon
+                    font.family: root.fontFamily
+                    font.pixelSize: 10
+                    color: drawerCollapseHover.containsMouse ? root.accent : root.dimText
                   }
                 }
               }
