@@ -2671,13 +2671,18 @@ Panel {
               // Search / Filter row & Drawer Collapse Button
               RowLayout {
                 Layout.fillWidth: true
-                height: 30
+                Layout.preferredHeight: 30
+                Layout.fillHeight: false
+                implicitHeight: 30
                 spacing: 6
 
                 // Search / Filter box
                 Rectangle {
                   Layout.fillWidth: true
-                  Layout.fillHeight: true
+                  Layout.preferredHeight: 30
+                  Layout.fillHeight: false
+                  implicitHeight: 30
+                  height: 30
                   color: root.cardBg
                   radius: 6
                   border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
@@ -2725,6 +2730,11 @@ Panel {
 
                 // Collapse Sidebar Button
                 Rectangle {
+                  Layout.preferredWidth: 30
+                  Layout.preferredHeight: 30
+                  Layout.fillHeight: false
+                  implicitWidth: 30
+                  implicitHeight: 30
                   width: 30
                   height: 30
                   radius: 6
