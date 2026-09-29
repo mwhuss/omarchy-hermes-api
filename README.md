@@ -39,7 +39,24 @@ Configure endpoints and multiplexed agent profiles directly in the flyout settin
 
 ---
 
-## ⌨️ Global Hotkey & CLI
+## ⌨️ Keyboard Shortcuts & Global Hotkey
+
+### In-App Keyboard Shortcuts
+
+The flyout panel and standalone window support standard keyboard shortcuts:
+
+| Shortcut | Action | Description |
+|---|---|---|
+| <kbd>Ctrl</kbd> + <kbd>N</kbd> | New session | Starts a new session with the active target (or opens target picker) |
+| <kbd>Ctrl</kbd> + <kbd>B</kbd> / <kbd>Ctrl</kbd> + <kbd>S</kbd> | Toggle sidebar | Opens or collapses the session list sidebar drawer |
+| <kbd>Alt</kbd> + <kbd>↑</kbd> / <kbd>Alt</kbd> + <kbd>↓</kbd> | Cycle sessions | Navigates to previous / next session with wrap-around |
+| <kbd>Ctrl</kbd> + <kbd>[</kbd> / <kbd>Ctrl</kbd> + <kbd>]</kbd> | Cycle sessions | Alternate keybindings for session cycling |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>C</kbd> | Copy response | Copies latest assistant response directly to system clipboard via `wl-copy` |
+| <kbd>Ctrl</kbd> + <kbd>L</kbd> | Focus prompt | Moves focus to the prompt input field |
+| <kbd>/</kbd> | Focus prompt | Focuses prompt input when not focused on another input field |
+| <kbd>Esc</kbd> | Dismiss / Close | Closes open dropdowns, modals, or the standalone app window |
+
+### Global Hotkey & CLI
 
 Summon or dismiss the flyout from anywhere — a global window-manager hotkey, a launcher (Walker/Rofi), or a plain shell — via the Quickshell IPC command and a lightweight wrapper script. The plugin exposes `open`, `close`, `toggle`, and `toggleAppWindow` IPC endpoints.
 
