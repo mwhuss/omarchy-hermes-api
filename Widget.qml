@@ -130,6 +130,17 @@ Panel {
     return root.serverName || "Hermes"
   }
 
+  function currentPromptAgentName() {
+    if (root.selectedSessionId) {
+      var s = root.getSessionAgentName(root.currentSessionItem() || { id: root.selectedSessionId })
+      if (s && s !== "Hermes") return s
+    }
+    var t = root.currentSessionTarget
+    if (t && t.endpointId) return (t.profileName && t.profileName !== "default") ? t.profileName : root.getEndpointDisplayName(t.endpointId)
+    var target = root.activeTargetDisplayName()
+    return (target && target !== "Hermes") ? target : (root.serverName || "Hermes")
+  }
+
   function getSessionAgentDisplayName(s) {
     if (!s) return root.serverName || "Hermes"
     var epName = s.endpoint_name || getEndpointDisplayName(s.endpoint_id)
@@ -493,7 +504,7 @@ Panel {
                 endpointName: ep.name,
                 profileName: prof.name,
                 isDefault: prof.isDefault === true,
-                displayName: prof.displayName || (ep.name + " (" + prof.name + ")"),
+                displayName: prof.displayName || (prof.isDefault ? ep.name : prof.name),
                 monogram: prof.monogram || root.getMonogram(prof.isDefault ? ep.name : prof.name),
                 color: prof.color || root.getAgentColor(prof.isDefault ? ep.name : prof.name),
                 connected: ep.connected === true,
@@ -3099,7 +3110,7 @@ Panel {
 
                     Text {
   textFormat: Text.PlainText
-                      text: "How can " + root.serverName + " help you today?"
+                      text: "How can " + root.currentPromptAgentName() + " help you today?"
                       font.family: root.fontFamily
                       font.pixelSize: 14
                       font.weight: Font.DemiBold
@@ -3969,20 +3980,22 @@ Panel {
                           event.accepted = true
                         }
                       }
-
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.top: parent.top
-                        anchors.topMargin: 8
-                        anchors.left: parent.left
-                        anchors.leftMargin: 10
-                        text: "Ask " + root.serverName + " a question or assign a task..."
-                        font.family: root.fontFamily
-                        font.pixelSize: 11
-                        color: root.dimText
-                        visible: !parent.text && !parent.activeFocus
-                      }
                     }
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.right: parent.right
+                    anchors.rightMargin: 10
+                    elide: Text.ElideRight
+                    text: "Ask " + root.currentPromptAgentName() + " a question or assign a task..."
+                    font.family: root.fontFamily
+                    font.pixelSize: 11
+                    color: root.dimText
+                    visible: !promptInput.text && !promptInput.activeFocus
                   }
                 }
 
@@ -5573,8 +5586,8 @@ Panel {
                           Layout.alignment: Qt.AlignVCenter
                         }
                         Text {
-  textFormat: Text.PlainText
-                          text: agentTargetCard.modelData.endpointName + " • " + (agentTargetCard.modelData.isDefault ? "default profile" : agentTargetCard.modelData.profileName)
+                          textFormat: Text.PlainText
+                          text: agentTargetCard.modelData.endpointName
                           font.family: root.fontFamily
                           font.pixelSize: 9
                           color: root.dimText
