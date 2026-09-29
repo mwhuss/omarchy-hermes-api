@@ -73,26 +73,11 @@ Panel {
   }
 
   function cycleSession(next) {
-    if (!root.filteredSessions || root.filteredSessions.length === 0) return
-    var currentIdx = -1
-    for (var i = 0; i < root.filteredSessions.length; i++) {
-      var s = root.filteredSessions[i]
-      if (s.id === root.selectedSessionId || s.raw_id === root.selectedSessionId) {
-        currentIdx = i
-        break
-      }
-    }
-    var targetIdx = 0
-    if (currentIdx === -1) {
-      targetIdx = next ? 0 : root.filteredSessions.length - 1
-    } else {
-      if (next) {
-        targetIdx = (currentIdx + 1) % root.filteredSessions.length
-      } else {
-        targetIdx = (currentIdx - 1 + root.filteredSessions.length) % root.filteredSessions.length
-      }
-    }
-    var targetSession = root.filteredSessions[targetIdx]
+    var list = root.filteredSessions
+    if (!list || list.length === 0) return
+    var idx = list.findIndex(function(s) { return s.id === root.selectedSessionId || s.raw_id === root.selectedSessionId })
+    var targetIdx = idx === -1 ? (next ? 0 : list.length - 1) : (idx + (next ? 1 : -1) + list.length) % list.length
+    var targetSession = list[targetIdx]
     if (targetSession) {
       root.selectSession(targetSession.id)
       root.ensureSessionVisible(targetSession.id)
@@ -2673,7 +2658,7 @@ Panel {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
                 Layout.fillHeight: false
-                implicitHeight: 30
+                height: 30
                 spacing: 6
 
                 // Search / Filter box
@@ -2681,7 +2666,6 @@ Panel {
                   Layout.fillWidth: true
                   Layout.preferredHeight: 30
                   Layout.fillHeight: false
-                  implicitHeight: 30
                   height: 30
                   color: root.cardBg
                   radius: 6
@@ -2733,14 +2717,11 @@ Panel {
                   Layout.preferredWidth: 30
                   Layout.preferredHeight: 30
                   Layout.fillHeight: false
-                  implicitWidth: 30
-                  implicitHeight: 30
                   width: 30
                   height: 30
                   radius: 6
                   color: drawerCollapseHover.containsMouse ? root.cardHover : root.cardBg
                   border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
-                  Layout.alignment: Qt.AlignVCenter
 
                   MouseArea {
                     id: drawerCollapseHover
@@ -5819,15 +5800,8 @@ Panel {
       blocked: Boolean(root.promptInput && root.promptInput.activeFocus)
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
-        if (root.promptInput && root.promptInput.activeFocus) {
-          return
-        }
+        if (root.promptInput && root.promptInput.activeFocus) return
         if (root.handleCommonShortcut(event)) return
-      }
-      onTextKey: function(t) {
-        if (t === "/" && root.promptInput && !root.promptInput.activeFocus) {
-          root.promptInput.forceActiveFocus()
-        }
       }
       onMoveRequested: function(dx, dy) {
         if (root._altSessionCycling) {
@@ -5906,11 +5880,8 @@ Panel {
       focus: true
 
       Keys.onPressed: function(event) {
-        if (root.promptInput && root.promptInput.activeFocus) {
-          if (root.handleCommonShortcut(event)) return
-          return
-        }
         if (root.handleCommonShortcut(event)) return
+        if (root.promptInput && root.promptInput.activeFocus) return
         if (event.key === Qt.Key_Escape) {
           if (root.isTargetDropdownOpen) {
             root.isTargetDropdownOpen = false
