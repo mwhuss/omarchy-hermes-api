@@ -156,10 +156,12 @@ For security, this file is written with strict `0600` permissions (`-rw-------`)
       "url": "http://127.0.0.1",
       "port": 8642,
       "apiKey": "",
+      "contextWindow": 128000,
       "profiles": [
         {
           "name": "researcher",
-          "apiKey": ""
+          "apiKey": "",
+          "contextWindow": 96000
         },
         {
           "name": "podcast-writer",
@@ -173,6 +175,7 @@ For security, this file is written with strict `0600` permissions (`-rw-------`)
       "url": "https://hermes.example.com",
       "port": 443,
       "apiKey": "sk-example-token-12345",
+      "contextWindow": 200000,
       "profiles": []
     }
   ]
@@ -191,7 +194,9 @@ For security, this file is written with strict `0600` permissions (`-rw-------`)
 | `endpoints[].url` | Server hostname and protocol without path (e.g. `http://127.0.0.1` or `https://hermes.example.com`). |
 | `endpoints[].port` | Port number integer (1–65535, default: `8642`). |
 | `endpoints[].apiKey` | Bearer token authentication key (leave empty for unauthenticated local servers). |
-| `endpoints[].profiles` | Array of named multiplexed agent profiles. Each profile object has a `name` and optional per-profile `apiKey`. *(Note: The built-in default profile is automatically provided and does not need to be listed.)* |
+| `endpoints[].contextWindow` | Optional context window token limit (e.g. `128000`). When configured, displays consumption ratio and percentage in the session header. |
+| `endpoints[].profiles` | Array of named multiplexed agent profiles. Each profile object has a `name`, optional `apiKey`, and optional per-profile `contextWindow`. *(Note: The built-in default profile is automatically provided and does not need to be listed.)* |
+| `endpoints[].profiles[].contextWindow` | Optional per-profile context window ceiling (e.g. `96000`), overriding the endpoint limit. |
 
 ### Default Fallback
 
@@ -305,7 +310,7 @@ omarchy plugin remove com.mwhuss.omarchy-hermes-api
 - **Persisting files**:
   - `~/.config/omarchy-hermes-api/settings.json`: The user configuration file (containing configured endpoints, ports, and API keys) is preserved across uninstallations so settings are retained if the plugin is reinstalled or updated. To remove this configuration file manually:
     ```bash
-    rm -rf ~/.config/omarchy-hermes-api
+    rm -r ~/.config/omarchy-hermes-api
     ```
 - **Untouched system files**:
   - `~/.hermes/`: Any existing Hermes CLI configuration or profile files are only read if present and are never modified or deleted by this plugin.

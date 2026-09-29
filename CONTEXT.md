@@ -99,3 +99,11 @@ _Avoid_: detached panel, second instance, popup window
 A non-dialogue lifecycle/metadata message stored by the Hermes backend with `role: "session_meta"` and `content: null` (e.g. session close/archive markers). Excluded from the chat stream and never rendered as a bubble.
 _Avoid_: system message, log entry, null bubble
 
+**Token Usage Metric**:
+Quantitative accounting of prompt, completion, and total LLM tokens processed during a Hermes Session turn, captured from stream completion events.
+_Avoid_: token bill, word count, character count
+
+**Context Window Badge**:
+A visual status badge reflecting token consumption against model context thresholds, alerting users as a conversation nears boundary limits.
+_Avoid_: memory bar, capacity meter, quota badge
+

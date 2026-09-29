@@ -578,6 +578,13 @@ async function handleStatus(targetEndpointId, targetProfileName) {
   }
 }
 
+function extractTokenMetrics(s) {
+  const inTok = typeof s.input_tokens === 'number' ? s.input_tokens : 0;
+  const outTok = typeof s.output_tokens === 'number' ? s.output_tokens : 0;
+  const totalTok = (inTok || outTok) ? (inTok + outTok) : (typeof s.total_tokens === 'number' ? s.total_tokens : 0);
+  return { input_tokens: inTok, output_tokens: outTok, total_tokens: totalTok };
+}
+
 async function fetchSessionsForConfig(cfg) {
   try {
     const headers = { 'Accept': 'application/json' };
@@ -616,6 +623,7 @@ async function fetchSessionsForConfig(cfg) {
 
       const rawId = String(s.id || s.session_id || `session-${idx}`).slice(0, 128);
       const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawId}`;
+      const tok = extractTokenMetrics(s);
 
       return {
         id: compositeId,
@@ -631,7 +639,10 @@ async function fetchSessionsForConfig(cfg) {
         message_count: typeof s.message_count === 'number' ? s.message_count : (s.messages?.length || 0),
         model: s.model || 'hermes-agent',
         monogram: getAgentMonogram(cfg.profileName !== 'default' ? cfg.profileName : cfg.endpointName),
-        color: getAgentColor(cfg.profileName !== 'default' ? cfg.profileName : cfg.endpointName)
+        color: getAgentColor(cfg.profileName !== 'default' ? cfg.profileName : cfg.endpointName),
+        input_tokens: tok.input_tokens,
+        output_tokens: tok.output_tokens,
+        total_tokens: tok.total_tokens
       };
     });
   } catch (err) {
@@ -833,6 +844,7 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       };
     });
 
+    const tok = extractTokenMetrics(sessionObj);
     const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
       success: true,
@@ -850,7 +862,10 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
         title: sessionObj.title || sessionObj.name || `Session ${rawSessionId}`,
         messages,
         created_at: sessionObj.created_at || sessionObj.started_at,
-        updated_at: sessionObj.updated_at || sessionObj.last_active
+        updated_at: sessionObj.updated_at || sessionObj.last_active,
+        input_tokens: tok.input_tokens,
+        output_tokens: tok.output_tokens,
+        total_tokens: tok.total_tokens
       }
     }));
   } catch (err) {
@@ -1085,7 +1100,8 @@ async function handleStreamChat(options) {
     const reqBody = JSON.stringify({
       model: model || 'hermes-agent',
       messages: messages.map(m => ({ role: m.role, content: m.content })),
-      stream: true
+      stream: true,
+      stream_options: { include_usage: true }
     });
 
     let res;
@@ -1144,6 +1160,7 @@ async function handleStreamChat(options) {
 
     let fullText = '';
     let fullReasoning = '';
+    let streamUsage = null;
     const decoder = new TextDecoder('utf8');
     const reader = res.body.getReader();
     let lineBuffer = '';
@@ -1189,6 +1206,25 @@ async function handleStreamChat(options) {
           chunk = JSON.parse(dataStr);
         } catch (e) {
           return;
+        }
+
+        // Capture usage from SSE stream done / final chunk or any chunk containing usage
+        const usageCandidate = chunk.usage || (Array.isArray(chunk.choices) && chunk.choices[0]?.usage);
+        if (usageCandidate && typeof usageCandidate === 'object') {
+          const pt = Number.isInteger(usageCandidate.prompt_tokens) && usageCandidate.prompt_tokens >= 0
+            ? usageCandidate.prompt_tokens
+            : (typeof usageCandidate.prompt_tokens === 'number' && !isNaN(usageCandidate.prompt_tokens) && usageCandidate.prompt_tokens >= 0 ? Math.floor(usageCandidate.prompt_tokens) : 0);
+          const ct = Number.isInteger(usageCandidate.completion_tokens) && usageCandidate.completion_tokens >= 0
+            ? usageCandidate.completion_tokens
+            : (typeof usageCandidate.completion_tokens === 'number' && !isNaN(usageCandidate.completion_tokens) && usageCandidate.completion_tokens >= 0 ? Math.floor(usageCandidate.completion_tokens) : 0);
+          const tt = Number.isInteger(usageCandidate.total_tokens) && usageCandidate.total_tokens >= 0
+            ? usageCandidate.total_tokens
+            : (typeof usageCandidate.total_tokens === 'number' && !isNaN(usageCandidate.total_tokens) && usageCandidate.total_tokens >= 0 ? Math.floor(usageCandidate.total_tokens) : (pt + ct));
+          streamUsage = {
+            prompt_tokens: pt,
+            completion_tokens: ct,
+            total_tokens: tt
+          };
         }
 
         // Handle Hermes custom SSE event: hermes.tool.progress
@@ -1300,7 +1336,8 @@ async function handleStreamChat(options) {
       profile_name: cfg.profileName,
       full_text: fullText,
       full_reasoning: fullReasoning,
-      finish_reason: 'stop'
+      finish_reason: 'stop',
+      usage: streamUsage
     }) + '\n');
   } catch (err) {
     process.stdout.write(JSON.stringify({
@@ -1402,6 +1439,10 @@ async function handleListTargets() {
       connected = false;
     }
 
+    const epContextWindow = (ep.contextWindow && typeof ep.contextWindow === 'number' && ep.contextWindow > 0)
+      ? ep.contextWindow
+      : null;
+
     // Merge profiles: default profile is always present
     const profilesList = [{
       name: 'default',
@@ -1409,6 +1450,7 @@ async function handleListTargets() {
       targetId: `${ep.id}:default`,
       displayName: ep.name,
       endpointName: ep.name,
+      contextWindow: epContextWindow,
       monogram: getAgentMonogram(ep.name),
       color: getAgentColor(ep.name)
     }];
@@ -1419,12 +1461,16 @@ async function handleListTargets() {
         const pName = typeof p === 'string' ? p : p.name;
         if (pName && !existingNames.has(pName.toLowerCase())) {
           existingNames.add(pName.toLowerCase());
+          const pContextWindow = (p && typeof p === 'object' && typeof p.contextWindow === 'number' && p.contextWindow > 0)
+            ? p.contextWindow
+            : null;
           profilesList.push({
             name: pName,
             isDefault: false,
             targetId: `${ep.id}:${pName}`,
             displayName: pName,
             endpointName: ep.name,
+            contextWindow: pContextWindow,
             monogram: getAgentMonogram(pName),
             color: getAgentColor(pName)
           });
@@ -1456,6 +1502,7 @@ async function handleListTargets() {
       endpointName: ep.name,
       url: ep.url,
       port: ep.port,
+      contextWindow: epContextWindow,
       connected,
       models,
       monogram: getAgentMonogram(ep.name),
@@ -1672,6 +1719,23 @@ async function handleSaveSettings(rawInput) {
 
     const apiKey = typeof ep.apiKey === 'string' ? sanitizeHeaderValue(ep.apiKey) : '';
 
+    function parseContextWindow(val, errPrefix) {
+      if (val === undefined || val === null || val === '') return { ok: true, val: null };
+      const cw = parseInt(val, 10);
+      if (isNaN(cw) || cw < 1) {
+        console.log(JSON.stringify({
+          success: false,
+          error: `${errPrefix} context window must be a positive integer (got ${val})`
+        }));
+        return { ok: false };
+      }
+      return { ok: true, val: cw };
+    }
+
+    const epCw = parseContextWindow(ep.contextWindow, `Endpoint "${name}"`);
+    if (!epCw.ok) return;
+    const contextWindow = epCw.val;
+
     // Only custom profiles are saved; the default profile is ornamental in the UI and never persisted
     const profiles = [];
     if (Array.isArray(ep.profiles)) {
@@ -1679,11 +1743,15 @@ async function handleSaveSettings(rawInput) {
         const prof = ep.profiles[j];
         let profName = '';
         let profKey = '';
+        let profContextWindow = null;
         if (typeof prof === 'string') {
           profName = prof.trim();
         } else if (prof && typeof prof === 'object') {
           profName = typeof prof.name === 'string' ? prof.name.trim() : '';
           profKey = typeof prof.apiKey === 'string' ? sanitizeHeaderValue(prof.apiKey) : '';
+          const pCw = parseContextWindow(prof.contextWindow, `Profile #${j + 1} in endpoint "${name}"`);
+          if (!pCw.ok) return;
+          profContextWindow = pCw.val;
         }
 
         // Never save "default" profile - it represents the built-in endpoint agent
@@ -1698,18 +1766,26 @@ async function handleSaveSettings(rawInput) {
           }));
           return;
         }
-        profiles.push({ name: profName, apiKey: profKey });
+        const profObj = { name: profName, apiKey: profKey };
+        if (profContextWindow !== null) {
+          profObj.contextWindow = profContextWindow;
+        }
+        profiles.push(profObj);
       }
     }
 
-    validatedEndpoints.push({
+    const epObj = {
       id,
       name,
       url: cleanUrl,
       port,
       apiKey,
       profiles
-    });
+    };
+    if (contextWindow !== null) {
+      epObj.contextWindow = contextWindow;
+    }
+    validatedEndpoints.push(epObj);
   }
 
   let activeTarget = data.activeTarget;
