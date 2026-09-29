@@ -52,6 +52,128 @@ Panel {
   property var chatFlick: null
   property var sessionListView: null
   property real newSessionBtnX: 200
+  property bool isSessionDrawerOpen: true
+  property bool _altSessionCycling: false
+  property var searchInput: null
+
+  function toggleSessionDrawer() {
+    root.isSessionDrawerOpen = !root.isSessionDrawerOpen
+  }
+
+  function triggerNewSession() {
+    if (root.isSettingsOpen) root.isSettingsOpen = false
+    root.isTargetDropdownOpen = false
+    if (root.allAgentTargets.length <= 1) {
+      var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
+      var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
+      root.startNewSessionForTarget(defEp, defProf)
+    } else {
+      root.isAgentPickerOpen = !root.isAgentPickerOpen
+    }
+  }
+
+  function cycleSession(next) {
+    if (!root.filteredSessions || root.filteredSessions.length === 0) return
+    var currentIdx = -1
+    for (var i = 0; i < root.filteredSessions.length; i++) {
+      var s = root.filteredSessions[i]
+      if (s.id === root.selectedSessionId || s.raw_id === root.selectedSessionId) {
+        currentIdx = i
+        break
+      }
+    }
+    var targetIdx = 0
+    if (currentIdx === -1) {
+      targetIdx = next ? 0 : root.filteredSessions.length - 1
+    } else {
+      if (next) {
+        targetIdx = (currentIdx + 1) % root.filteredSessions.length
+      } else {
+        targetIdx = (currentIdx - 1 + root.filteredSessions.length) % root.filteredSessions.length
+      }
+    }
+    var targetSession = root.filteredSessions[targetIdx]
+    if (targetSession) {
+      root.selectSession(targetSession.id)
+      root.ensureSessionVisible(targetSession.id)
+    }
+  }
+
+  function copyLatestAssistantResponse() {
+    if (root.currentStreamingContent && root.currentStreamingContent.trim()) {
+      Quickshell.execDetached(["/usr/bin/wl-copy", "--", root.currentStreamingContent.trim()])
+      return true
+    }
+    if (root.messages && root.messages.length > 0) {
+      for (var i = root.messages.length - 1; i >= 0; i--) {
+        var msg = root.messages[i]
+        if (msg && msg.role === "assistant" && msg.content && String(msg.content).trim()) {
+          Quickshell.execDetached(["/usr/bin/wl-copy", "--", String(msg.content).trim()])
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function handleCommonShortcut(event) {
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_N) {
+      root.triggerNewSession()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_B || event.key === Qt.Key_S)) {
+      root.toggleSessionDrawer()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.AltModifier) && event.key === Qt.Key_Up) {
+      root._altSessionCycling = true
+      Qt.callLater(function() { root._altSessionCycling = false })
+      root.cycleSession(false)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.AltModifier) && event.key === Qt.Key_Down) {
+      root._altSessionCycling = true
+      Qt.callLater(function() { root._altSessionCycling = false })
+      root.cycleSession(true)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketLeft) {
+      root.cycleSession(false)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketRight) {
+      root.cycleSession(true)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_C) {
+      root.copyLatestAssistantResponse()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_L) {
+      if (root.promptInput) {
+        root.promptInput.forceActiveFocus()
+        event.accepted = true
+        return true
+      }
+    }
+    if (event.key === Qt.Key_Slash && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+      if (root.isEditingTitle || root.isSettingsOpen) return false
+      if (root.searchInput && root.searchInput.activeFocus) return false
+      if (root.promptInput && !root.promptInput.activeFocus) {
+        root.promptInput.forceActiveFocus()
+        event.accepted = true
+        return true
+      }
+    }
+    return false
+  }
 
   function openAppWindow() {
     if (root.promptInput) root.promptDraft = root.promptInput.text
@@ -2388,17 +2510,7 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (root.isSettingsOpen) root.isSettingsOpen = false
-                  root.isTargetDropdownOpen = false
-                  if (root.allAgentTargets.length <= 1) {
-                    var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
-                    var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
-                    root.startNewSessionForTarget(defEp, defProf)
-                  } else {
-                    root.isAgentPickerOpen = !root.isAgentPickerOpen
-                  }
-                }
+                onClicked: root.triggerNewSession()
               }
 
               RowLayout {
@@ -2546,6 +2658,7 @@ Panel {
 
           // ==================== Left Drawer: Session List
           Rectangle {
+            visible: root.isSessionDrawerOpen
             Layout.fillHeight: true
             Layout.preferredWidth: 230
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.02)
@@ -2577,6 +2690,9 @@ Panel {
                   }
 
                   TextInput {
+                    id: searchTextInput
+                    Component.onCompleted: root.searchInput = searchTextInput
+                    Component.onDestruction: if (root.searchInput === searchTextInput) root.searchInput = null
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     maximumLength: 256
@@ -2735,6 +2851,7 @@ Panel {
           }
 
           Rectangle {
+            visible: root.isSessionDrawerOpen
             Layout.fillHeight: true
             width: 1
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
@@ -2767,6 +2884,32 @@ Panel {
                   RowLayout {
                     anchors.fill: parent
                     spacing: 6
+
+                    // Toggle Sidebar Button
+                    Rectangle {
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: sidebarToggleHover.containsMouse ? root.cardHover : "transparent"
+                      Layout.alignment: Qt.AlignVCenter
+
+                      MouseArea {
+                        id: sidebarToggleHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSessionDrawer()
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        text: "\uF0C9" // Bars / menu icon
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: sidebarToggleHover.containsMouse ? root.accent : (root.isSessionDrawerOpen ? root.foreground : root.dimText)
+                      }
+                    }
 
                     // Active Chat Monogram Badge
                     Rectangle {
@@ -3955,6 +4098,8 @@ Panel {
                             root.sendCurrentMessage()
                             event.accepted = true
                           }
+                        } else if (root.handleCommonShortcut(event)) {
+                          // Handled common shortcut (Ctrl+N, Ctrl+B, Ctrl+S, Alt+Up, Alt+Down, etc.)
                         } else if (event.key === Qt.Key_Up) {
                           var atTop = promptInput.cursorPosition === 0 || promptInput.cursorRectangle.y <= promptInput.topPadding + 2
                           if (atTop) {
@@ -5628,7 +5773,23 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: Boolean(root.promptInput && root.promptInput.activeFocus)
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) {
+        if (root.promptInput && root.promptInput.activeFocus) {
+          return
+        }
+        if (root.handleCommonShortcut(event)) return
+      }
+      onTextKey: function(t) {
+        if (t === "/" && root.promptInput && !root.promptInput.activeFocus) {
+          root.promptInput.forceActiveFocus()
+        }
+      }
       onMoveRequested: function(dx, dy) {
+        if (root._altSessionCycling) {
+          root._altSessionCycling = false
+          return
+        }
         if (dy < 0) {
           root.navigatePromptHistory(true)
           if (root.promptInput) root.promptInput.forceActiveFocus()
@@ -5702,8 +5863,10 @@ Panel {
 
       Keys.onPressed: function(event) {
         if (root.promptInput && root.promptInput.activeFocus) {
+          if (root.handleCommonShortcut(event)) return
           return
         }
+        if (root.handleCommonShortcut(event)) return
         if (event.key === Qt.Key_Escape) {
           if (root.isTargetDropdownOpen) {
             root.isTargetDropdownOpen = false
