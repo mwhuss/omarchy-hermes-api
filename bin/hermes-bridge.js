@@ -1558,12 +1558,17 @@ async function handleGetSettings() {
             });
           }
         });
+        const appWindow = (data.appWindow && typeof data.appWindow === 'object') ? {
+          width: Math.max(560, parseInt(data.appWindow.width, 10) || 800),
+          height: Math.max(480, parseInt(data.appWindow.height, 10) || 650)
+        } : { width: 800, height: 650 };
         console.log(JSON.stringify({
           success: true,
           seeded: false,
           settings: {
             activeTarget: data.activeTarget || { endpointId: 'all', profileName: 'all' },
             hideCronSessions: data.hideCronSessions === true,
+            appWindow,
             endpoints: data.endpoints
           }
         }));
@@ -1592,6 +1597,7 @@ function buildSeededSettings() {
   return {
     activeTarget: { endpointId: 'all', profileName: 'all' },
     hideCronSessions: false,
+    appWindow: { width: 800, height: 650 },
     endpoints: [
       {
         id: 'endpoint-default',
@@ -1797,6 +1803,7 @@ async function handleSaveSettings(rawInput) {
   }
 
   // Preserve the hideCronSessions preference when the payload omits it
+  // Preserve the hideCronSessions preference when the payload omits it
   // (the endpoint Save button only sends { endpoints })
   let hideCronSessions = data.hideCronSessions === true;
   if (data.hideCronSessions === undefined) {
@@ -1804,9 +1811,23 @@ async function handleSaveSettings(rawInput) {
     hideCronSessions = !!(existing && existing.hideCronSessions === true);
   }
 
+  // Preserve appWindow dimensions when omitted
+  let appWindow = data.appWindow;
+  if (appWindow === undefined) {
+    const existing = loadSettingsFile();
+    if (existing && existing.appWindow) {
+      appWindow = existing.appWindow;
+    }
+  }
+  const cleanAppWindow = (appWindow && typeof appWindow === 'object') ? {
+    width: Math.max(560, parseInt(appWindow.width, 10) || 800),
+    height: Math.max(480, parseInt(appWindow.height, 10) || 650)
+  } : { width: 800, height: 650 };
+
   const cleanSettings = {
     activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
     hideCronSessions,
+    appWindow: cleanAppWindow,
     endpoints: validatedEndpoints
   };
 
@@ -1821,6 +1842,54 @@ async function handleSaveSettings(rawInput) {
     console.log(JSON.stringify({
       success: false,
       error: `Failed to write settings file: ${err.message}`
+    }));
+  }
+}
+
+async function handleSetAppWindowGeometry(widthStr, heightStr) {
+  const width = parseInt(widthStr, 10);
+  const height = parseInt(heightStr, 10);
+  if (isNaN(width) || isNaN(height)) {
+    console.log(JSON.stringify({
+      success: false,
+      error: 'Width and height must be valid integers'
+    }));
+    return;
+  }
+
+  const clampedWidth = Math.max(560, width);
+  const clampedHeight = Math.max(480, height);
+
+  const settingsPath = getSettingsPath();
+  let settings;
+  if (fs.existsSync(settingsPath)) {
+    settings = loadSettingsFile();
+    if (!settings) {
+      console.log(JSON.stringify({
+        success: false,
+        error: 'Settings file is invalid; fix or remove it before changing window geometry'
+      }));
+      return;
+    }
+  } else {
+    settings = buildSeededSettings();
+  }
+
+  settings.appWindow = {
+    width: clampedWidth,
+    height: clampedHeight
+  };
+
+  try {
+    writeAtomicSettings(settings);
+    console.log(JSON.stringify({
+      success: true,
+      appWindow: settings.appWindow
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to save appWindow geometry: ${err.message}`
     }));
   }
 }
@@ -1922,6 +1991,10 @@ async function main() {
       await handleSetHideCron(rest[1]);
       break;
 
+    case 'set-app-window-geometry':
+      await handleSetAppWindowGeometry(rest[1], rest[2]);
+      break;
+
     case 'stream-chat': {
       let sessionId = null;
       let prompt = '';
@@ -1974,7 +2047,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron, set-app-window-geometry`
       }));
       process.exit(1);
   }
