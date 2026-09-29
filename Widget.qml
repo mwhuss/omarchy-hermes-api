@@ -52,6 +52,113 @@ Panel {
   property var chatFlick: null
   property var sessionListView: null
   property real newSessionBtnX: 200
+  property bool isSessionDrawerOpen: true
+  property bool _altSessionCycling: false
+  property var searchInput: null
+
+  function toggleSessionDrawer() {
+    root.isSessionDrawerOpen = !root.isSessionDrawerOpen
+  }
+
+  function triggerNewSession() {
+    if (root.isSettingsOpen) root.isSettingsOpen = false
+    root.isTargetDropdownOpen = false
+    if (root.allAgentTargets.length <= 1) {
+      var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
+      var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
+      root.startNewSessionForTarget(defEp, defProf)
+    } else {
+      root.isAgentPickerOpen = !root.isAgentPickerOpen
+    }
+  }
+
+  function cycleSession(next) {
+    var list = root.filteredSessions
+    if (!list || list.length === 0) return
+    var idx = list.findIndex(function(s) { return s.id === root.selectedSessionId || s.raw_id === root.selectedSessionId })
+    var targetIdx = idx === -1 ? (next ? 0 : list.length - 1) : (idx + (next ? 1 : -1) + list.length) % list.length
+    var targetSession = list[targetIdx]
+    if (targetSession) {
+      root.selectSession(targetSession.id)
+      root.ensureSessionVisible(targetSession.id)
+    }
+  }
+
+  function copyLatestAssistantResponse() {
+    if (root.currentStreamingContent && root.currentStreamingContent.trim()) {
+      Quickshell.execDetached(["/usr/bin/wl-copy", "--", root.currentStreamingContent.trim()])
+      return true
+    }
+    if (root.messages && root.messages.length > 0) {
+      for (var i = root.messages.length - 1; i >= 0; i--) {
+        var msg = root.messages[i]
+        if (msg && msg.role === "assistant" && msg.content && String(msg.content).trim()) {
+          Quickshell.execDetached(["/usr/bin/wl-copy", "--", String(msg.content).trim()])
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function handleCommonShortcut(event) {
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_N) {
+      root.triggerNewSession()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_B || event.key === Qt.Key_S)) {
+      root.toggleSessionDrawer()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.AltModifier) && event.key === Qt.Key_Up) {
+      root._altSessionCycling = true
+      Qt.callLater(function() { root._altSessionCycling = false })
+      root.cycleSession(false)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.AltModifier) && event.key === Qt.Key_Down) {
+      root._altSessionCycling = true
+      Qt.callLater(function() { root._altSessionCycling = false })
+      root.cycleSession(true)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketLeft) {
+      root.cycleSession(false)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_BracketRight) {
+      root.cycleSession(true)
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_C) {
+      root.copyLatestAssistantResponse()
+      event.accepted = true
+      return true
+    }
+    if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_L) {
+      if (root.promptInput) {
+        root.promptInput.forceActiveFocus()
+        event.accepted = true
+        return true
+      }
+    }
+    if (event.key === Qt.Key_Slash && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier))) {
+      if (root.isEditingTitle || root.isSettingsOpen) return false
+      if (root.searchInput && root.searchInput.activeFocus) return false
+      if (root.promptInput && !root.promptInput.activeFocus) {
+        root.promptInput.forceActiveFocus()
+        event.accepted = true
+        return true
+      }
+    }
+    return false
+  }
 
   function openAppWindow() {
     if (root.promptInput) root.promptDraft = root.promptInput.text
@@ -2388,17 +2495,7 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                  if (root.isSettingsOpen) root.isSettingsOpen = false
-                  root.isTargetDropdownOpen = false
-                  if (root.allAgentTargets.length <= 1) {
-                    var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
-                    var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
-                    root.startNewSessionForTarget(defEp, defProf)
-                  } else {
-                    root.isAgentPickerOpen = !root.isAgentPickerOpen
-                  }
-                }
+                onClicked: root.triggerNewSession()
               }
 
               RowLayout {
@@ -2546,6 +2643,7 @@ Panel {
 
           // ==================== Left Drawer: Session List
           Rectangle {
+            visible: root.isSessionDrawerOpen
             Layout.fillHeight: true
             Layout.preferredWidth: 230
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.02)
@@ -2555,48 +2653,91 @@ Panel {
               anchors.margins: 8
               spacing: 6
 
-              // Search / Filter box
-              Rectangle {
+              // Search / Filter row & Drawer Collapse Button
+              RowLayout {
                 Layout.fillWidth: true
+                Layout.preferredHeight: 30
+                Layout.fillHeight: false
                 height: 30
-                color: root.cardBg
-                radius: 6
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                spacing: 6
 
-                RowLayout {
-                  anchors.fill: parent
-                  anchors.margins: 6
-                  spacing: 6
+                // Search / Filter box
+                Rectangle {
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 30
+                  Layout.fillHeight: false
+                  height: 30
+                  color: root.cardBg
+                  radius: 6
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
 
-                  Text {
-  textFormat: Text.PlainText
-                    text: "\uF002" // Search icon
-                    font.family: root.fontFamily
-                    font.pixelSize: 10
-                    color: root.dimText
-                  }
-
-                  TextInput {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    maximumLength: 256
-                    verticalAlignment: TextInput.AlignVCenter
-                    font.family: root.fontFamily
-                    font.pixelSize: 11
-                    color: root.foreground
-                    clip: true
-                    onTextChanged: root.searchQuery = text
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.margins: 6
+                    spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.left: parent.left
-                      text: "Search sessions..."
+                      textFormat: Text.PlainText
+                      text: "\uF002" // Search icon
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: root.dimText
+                    }
+
+                    TextInput {
+                      id: searchTextInput
+                      Component.onCompleted: root.searchInput = searchTextInput
+                      Component.onDestruction: if (root.searchInput === searchTextInput) root.searchInput = null
+                      Layout.fillWidth: true
+                      Layout.fillHeight: true
+                      maximumLength: 256
+                      verticalAlignment: TextInput.AlignVCenter
                       font.family: root.fontFamily
                       font.pixelSize: 11
-                      color: root.dimText
-                      visible: !parent.text
+                      color: root.foreground
+                      clip: true
+                      onTextChanged: root.searchQuery = text
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        text: "Search sessions..."
+                        font.family: root.fontFamily
+                        font.pixelSize: 11
+                        color: root.dimText
+                        visible: !parent.text
+                      }
                     }
+                  }
+                }
+
+                // Collapse Sidebar Button
+                Rectangle {
+                  Layout.preferredWidth: 30
+                  Layout.preferredHeight: 30
+                  Layout.fillHeight: false
+                  width: 30
+                  height: 30
+                  radius: 6
+                  color: drawerCollapseHover.containsMouse ? root.cardHover : root.cardBg
+                  border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+
+                  MouseArea {
+                    id: drawerCollapseHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.toggleSessionDrawer()
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    anchors.centerIn: parent
+                    text: "\uF0C9" // Bars / menu icon
+                    font.family: root.fontFamily
+                    font.pixelSize: 10
+                    color: drawerCollapseHover.containsMouse ? root.accent : root.dimText
                   }
                 }
               }
@@ -2735,6 +2876,7 @@ Panel {
           }
 
           Rectangle {
+            visible: root.isSessionDrawerOpen
             Layout.fillHeight: true
             width: 1
             color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
@@ -2767,6 +2909,32 @@ Panel {
                   RowLayout {
                     anchors.fill: parent
                     spacing: 6
+
+                    // Toggle Sidebar Button
+                    Rectangle {
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: sidebarToggleHover.containsMouse ? root.cardHover : "transparent"
+                      Layout.alignment: Qt.AlignVCenter
+
+                      MouseArea {
+                        id: sidebarToggleHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.toggleSessionDrawer()
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        text: "\uF0C9" // Bars / menu icon
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: sidebarToggleHover.containsMouse ? root.accent : (root.isSessionDrawerOpen ? root.foreground : root.dimText)
+                      }
+                    }
 
                     // Active Chat Monogram Badge
                     Rectangle {
@@ -3955,6 +4123,8 @@ Panel {
                             root.sendCurrentMessage()
                             event.accepted = true
                           }
+                        } else if (root.handleCommonShortcut(event)) {
+                          // Handled common shortcut (Ctrl+N, Ctrl+B, Ctrl+S, Alt+Up, Alt+Down, etc.)
                         } else if (event.key === Qt.Key_Up) {
                           var atTop = promptInput.cursorPosition === 0 || promptInput.cursorRectangle.y <= promptInput.topPadding + 2
                           if (atTop) {
@@ -5628,7 +5798,16 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: Boolean(root.promptInput && root.promptInput.activeFocus)
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) {
+        if (root.promptInput && root.promptInput.activeFocus) return
+        if (root.handleCommonShortcut(event)) return
+      }
       onMoveRequested: function(dx, dy) {
+        if (root._altSessionCycling) {
+          root._altSessionCycling = false
+          return
+        }
         if (dy < 0) {
           root.navigatePromptHistory(true)
           if (root.promptInput) root.promptInput.forceActiveFocus()
@@ -5701,9 +5880,8 @@ Panel {
       focus: true
 
       Keys.onPressed: function(event) {
-        if (root.promptInput && root.promptInput.activeFocus) {
-          return
-        }
+        if (root.handleCommonShortcut(event)) return
+        if (root.promptInput && root.promptInput.activeFocus) return
         if (event.key === Qt.Key_Escape) {
           if (root.isTargetDropdownOpen) {
             root.isTargetDropdownOpen = false

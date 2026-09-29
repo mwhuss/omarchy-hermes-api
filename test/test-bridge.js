@@ -1788,6 +1788,131 @@ function testSanitizeMarkdown() {
   console.log('  ✔ sanitizeMarkdown trust boundary verified across 25 hostile & regression cases');
 }
 
+function testKeyboardShortcutsAndNavigation() {
+  console.log('Testing: keyboard navigation shortcuts and sidebar drawer (Issue #65)...');
+
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  assert.ok(fs.existsSync(widgetPath), 'Widget.qml must exist');
+  const widgetContent = fs.readFileSync(widgetPath, 'utf8');
+
+  // Verify core properties exist
+  assert.ok(
+    widgetContent.includes('property bool isSessionDrawerOpen: true'),
+    'Widget.qml must define isSessionDrawerOpen property'
+  );
+  assert.ok(
+    widgetContent.includes('function toggleSessionDrawer()'),
+    'Widget.qml must define toggleSessionDrawer function'
+  );
+  assert.ok(
+    widgetContent.includes('function triggerNewSession()'),
+    'Widget.qml must define triggerNewSession function'
+  );
+  assert.ok(
+    widgetContent.includes('function cycleSession(next)'),
+    'Widget.qml must define cycleSession function'
+  );
+  assert.ok(
+    widgetContent.includes('function copyLatestAssistantResponse()'),
+    'Widget.qml must define copyLatestAssistantResponse function'
+  );
+  assert.ok(
+    widgetContent.includes('function handleCommonShortcut(event)'),
+    'Widget.qml must define handleCommonShortcut function'
+  );
+
+  // Verify shortcuts in handleCommonShortcut
+  // Ctrl+N (new session)
+  assert.ok(
+    widgetContent.includes('event.key === Qt.Key_N') && widgetContent.includes('root.triggerNewSession()'),
+    'handleCommonShortcut must handle Ctrl+N'
+  );
+  // Ctrl+B / Ctrl+S (toggle session drawer)
+  assert.ok(
+    widgetContent.includes('Key_B') && widgetContent.includes('Key_S') && widgetContent.includes('root.toggleSessionDrawer()'),
+    'handleCommonShortcut must handle Ctrl+B and Ctrl+S'
+  );
+  // Alt+Up / Alt+Down (cycle sessions)
+  assert.ok(
+    widgetContent.includes('Qt.AltModifier') && widgetContent.includes('Key_Up') && widgetContent.includes('root.cycleSession(false)'),
+    'handleCommonShortcut must handle Alt+Up'
+  );
+  assert.ok(
+    widgetContent.includes('Qt.AltModifier') && widgetContent.includes('Key_Down') && widgetContent.includes('root.cycleSession(true)'),
+    'handleCommonShortcut must handle Alt+Down'
+  );
+  // Ctrl+[ / Ctrl+] (cycle sessions)
+  assert.ok(
+    widgetContent.includes('Key_BracketLeft') && widgetContent.includes('Key_BracketRight'),
+    'handleCommonShortcut must handle Ctrl+[ and Ctrl+]'
+  );
+  // Ctrl+Shift+C (copy response)
+  assert.ok(
+    widgetContent.includes('Key_C') && widgetContent.includes('root.copyLatestAssistantResponse()'),
+    'handleCommonShortcut must handle Ctrl+Shift+C'
+  );
+  // / and Ctrl+L (focus promptInput)
+  assert.ok(
+    widgetContent.includes('Key_Slash') && widgetContent.includes('Key_L') && widgetContent.includes('root.promptInput.forceActiveFocus()'),
+    'handleCommonShortcut must handle / and Ctrl+L'
+  );
+
+  // Verify invocation in windowKeyCatcher and flyout keyCatcher and promptInput
+  assert.ok(
+    widgetContent.includes('id: windowKeyCatcher') &&
+    widgetContent.slice(widgetContent.indexOf('id: windowKeyCatcher')).includes('root.handleCommonShortcut(event)'),
+    'windowKeyCatcher must invoke root.handleCommonShortcut(event)'
+  );
+  assert.ok(
+    widgetContent.includes('id: keyCatcher') &&
+    widgetContent.slice(widgetContent.indexOf('id: keyCatcher')).includes('root.handleCommonShortcut(event)'),
+    'keyCatcher must invoke root.handleCommonShortcut(event)'
+  );
+  assert.ok(
+    widgetContent.includes('id: promptInput') &&
+    widgetContent.slice(widgetContent.indexOf('id: promptInput')).includes('root.handleCommonShortcut(event)'),
+    'promptInput must invoke root.handleCommonShortcut(event)'
+  );
+
+  // Verify sidebar toggle buttons exist
+  assert.ok(
+    widgetContent.includes('id: drawerCollapseHover') &&
+    widgetContent.slice(widgetContent.indexOf('id: drawerCollapseHover')).includes('root.toggleSessionDrawer()'),
+    'drawerCollapseHover button next to search must invoke root.toggleSessionDrawer()'
+  );
+  assert.ok(
+    widgetContent.includes('id: sidebarToggleHover') &&
+    widgetContent.slice(widgetContent.indexOf('id: sidebarToggleHover')).includes('root.toggleSessionDrawer()'),
+    'sidebarToggleHover button in subheader must invoke root.toggleSessionDrawer()'
+  );
+
+  // Verify cycling algorithm logic in isolation
+  function simulateCycle(sessions, selectedId, next) {
+    if (!sessions || sessions.length === 0) return selectedId;
+    let currentIdx = sessions.findIndex(s => s.id === selectedId);
+    let targetIdx = 0;
+    if (currentIdx === -1) {
+      targetIdx = next ? 0 : sessions.length - 1;
+    } else {
+      if (next) {
+        targetIdx = (currentIdx + 1) % sessions.length;
+      } else {
+        targetIdx = (currentIdx - 1 + sessions.length) % sessions.length;
+      }
+    }
+    return sessions[targetIdx].id;
+  }
+
+  const sampleSessions = [{ id: 's1' }, { id: 's2' }, { id: 's3' }];
+  assert.strictEqual(simulateCycle(sampleSessions, 's1', true), 's2', 'Cycle next from s1 should reach s2');
+  assert.strictEqual(simulateCycle(sampleSessions, 's2', true), 's3', 'Cycle next from s2 should reach s3');
+  assert.strictEqual(simulateCycle(sampleSessions, 's3', true), 's1', 'Cycle next from s3 should wrap to s1');
+  assert.strictEqual(simulateCycle(sampleSessions, 's1', false), 's3', 'Cycle prev from s1 should wrap to s3');
+  assert.strictEqual(simulateCycle(sampleSessions, 's3', false), 's2', 'Cycle prev from s3 should reach s2');
+
+  console.log('  ✔ keyboard navigation shortcuts and sidebar drawer verified');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -1811,6 +1936,7 @@ async function runAllTests() {
 
     testCliOptionsParser();
     await testZeroDependencies();
+    testKeyboardShortcutsAndNavigation();
     await testMockSseStreamWithCustomEvents();
     await testMockSseStreamWithReasoningDeltas();
     await testMockSseStreamReasoningCustomEvent();
