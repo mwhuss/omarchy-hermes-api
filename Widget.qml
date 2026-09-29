@@ -4090,8 +4090,8 @@ Panel {
                         visible: (modelData.role === "user" || modelData.role === "assistant") && (modelData.content && String(modelData.content).trim() !== "")
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
                         Layout.maximumWidth: parent.width * 0.88
-                        implicitWidth: msgText.implicitWidth + 20
-                        implicitHeight: msgText.implicitHeight + 16
+                        implicitWidth: Math.max(msgText.implicitWidth + 34, 48)
+                        implicitHeight: Math.max(msgText.implicitHeight + 16, 28)
                         radius: 8
                         color: modelData.role === "user" ? root.userBubbleBg : root.cardBg
                         border.color: modelData.role === "user" ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.3) : "transparent"
@@ -4102,8 +4102,14 @@ Panel {
 
                         TextEdit {
                           id: msgText
-                          anchors.fill: parent
-                          anchors.margins: 8
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.bottom: parent.bottom
+                          anchors.leftMargin: 8
+                          anchors.topMargin: 8
+                          anchors.bottomMargin: 8
+                          anchors.rightMargin: 26
                           text: modelData.role === "assistant" ? UrlGuard.sanitizeMarkdown(String(modelData.content || "").trim()) : String(modelData.content || "").trim()
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4125,7 +4131,7 @@ Panel {
                           anchors.right: parent.right
                           anchors.margins: 5
                           z: 2
-                          visible: modelData.role === "assistant" && assistantBubbleHover.hovered
+                          visible: (modelData.role === "user" || modelData.role === "assistant") && assistantBubbleHover.hovered
                           text: String(modelData.content || "").trim()
                         }
                       }
