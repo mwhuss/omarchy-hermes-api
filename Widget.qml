@@ -3257,19 +3257,23 @@ Panel {
               color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
             }
 
-            // Chat Viewport
-            Flickable {
-              id: chatFlick
-              Component.onCompleted: root.chatFlick = chatFlick
-              Component.onDestruction: if (root.chatFlick === chatFlick) root.chatFlick = null
+            // Chat Viewport Container
+            Item {
               Layout.fillWidth: true
               Layout.fillHeight: true
-              contentWidth: width
-              contentHeight: chatColumn.implicitHeight + 20
               clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              flickableDirection: Flickable.VerticalFlick
-              ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+              Flickable {
+                id: chatFlick
+                Component.onCompleted: root.chatFlick = chatFlick
+                Component.onDestruction: if (root.chatFlick === chatFlick) root.chatFlick = null
+                anchors.fill: parent
+                contentWidth: width
+                contentHeight: chatColumn.implicitHeight + 20
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
               onContentYChanged: {
                 var maxScroll = Math.max(0, contentHeight - height)
@@ -4081,6 +4085,72 @@ Panel {
                         onSelectedTextChanged: if (selectionStart !== selectionEnd) forceActiveFocus()
                       }
                     }
+                  }
+                }
+              }
+            }
+
+              // Floating 'Scroll to Bottom' Pill Button
+              Rectangle {
+                id: scrollToBottomBtn
+                z: 20
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: shouldShow ? 14 : 4
+
+                readonly property bool shouldShow: !root.isNearBottom && root.messages && root.messages.length > 0
+
+                opacity: shouldShow ? 1.0 : 0.0
+                visible: opacity > 0.0
+
+                Behavior on opacity {
+                  NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                }
+                Behavior on anchors.bottomMargin {
+                  NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+                }
+
+                height: 28
+                radius: 14
+                implicitWidth: pillRow.implicitWidth + 24
+
+                color: scrollBottomMouse.containsMouse ? root.cardHover : root.cardBg
+                border.color: scrollBottomMouse.containsMouse ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                border.width: 1
+
+                MouseArea {
+                  id: scrollBottomMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: {
+                    root.scrollToBottomInstantly()
+                    root.isNearBottom = true
+                  }
+                }
+
+                RowLayout {
+                  id: pillRow
+                  anchors.centerIn: parent
+                  spacing: 6
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "\uF078" // Chevron down
+                    font.family: root.fontFamily
+                    font.pixelSize: 10
+                    color: scrollBottomMouse.containsMouse ? root.accent : root.foreground
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  Text {
+                    textFormat: Text.PlainText
+                    text: "Scroll to bottom"
+                    font.family: root.fontFamily
+                    font.pixelSize: 11
+                    font.weight: Font.Medium
+                    color: scrollBottomMouse.containsMouse ? root.accent : root.foreground
+                    Layout.alignment: Qt.AlignVCenter
                   }
                 }
               }

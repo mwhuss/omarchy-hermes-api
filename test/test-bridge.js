@@ -371,6 +371,42 @@ async function testManifest() {
   console.log('  ✔ manifest configuration validation passed');
 }
 
+function testWidgetScrollToBottom() {
+  console.log('Testing: Widget.qml scroll-to-bottom button implementation (#60)...');
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  const widgetContent = fs.readFileSync(widgetPath, 'utf8');
+
+  // Verify braces are balanced
+  assert.strictEqual(
+    widgetContent.split('{').length,
+    widgetContent.split('}').length,
+    'Widget.qml must have balanced braces'
+  );
+
+  // Verify button declaration and id
+  assert(widgetContent.includes('id: scrollToBottomBtn'), 'Widget.qml must define scrollToBottomBtn');
+
+  // Verify condition
+  assert(widgetContent.includes('!root.isNearBottom && root.messages && root.messages.length > 0'),
+    'Widget.qml must check !root.isNearBottom and root.messages.length > 0');
+
+  // Verify scroll action on click
+  assert(widgetContent.includes('root.scrollToBottomInstantly()'),
+    'Widget.qml must call scrollToBottomInstantly() on click');
+  assert(widgetContent.includes('root.isNearBottom = true'),
+    'Widget.qml must set root.isNearBottom = true on click');
+
+  // Verify down icon
+  assert(widgetContent.includes('\\uF078'),
+    'Widget.qml must use down icon \\uF078');
+
+  // Verify hover handling via MouseArea
+  assert(widgetContent.includes('id: scrollBottomMouse') && widgetContent.includes('hoverEnabled: true'),
+    'Widget.qml must include MouseArea with hoverEnabled for scroll-to-bottom button');
+
+  console.log('  ✔ floating scroll-to-bottom button structure and contract verified');
+}
+
 async function testStreamChatNotify() {
   console.log('Testing: stream-chat with --notify flag...');
   const res = await runBridge(['stream-chat', '--prompt', 'Respond with "OK" only.', '--notify']);
@@ -1997,6 +2033,7 @@ async function runAllTests() {
     await testMockSseStreamWithReasoningDeltas();
     await testMockSseStreamReasoningCustomEvent();
     await testManifest();
+    testWidgetScrollToBottom();
     testUrlGuard();
     testSanitizeMarkdown();
     testFastPollAndMessageComparison();
