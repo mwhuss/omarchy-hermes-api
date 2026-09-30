@@ -19,7 +19,6 @@ Panel {
   readonly property bool isStreaming: activeStreamCount > 0
   readonly property bool isCurrentSessionStreaming: !!(selectedSessionId && activeStreams && activeStreams[selectedSessionId])
   property var sessionCache: ({})
-  property var lastFetchedSessionUpdateAts: ({})
   readonly property int maxCachedSessions: 50
   property var _cacheAccessOrder: []
   property bool isNearBottom: true
@@ -537,7 +536,7 @@ Panel {
         var activeItem = root.currentSessionItem()
         var activeUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : ""
         var cached = root.sessionCache[root.selectedSessionId] || {}
-        var lastFetched = cached.lastFetchedUpdatedAt || (root.lastFetchedSessionUpdateAts && root.lastFetchedSessionUpdateAts[root.selectedSessionId]) || ""
+        var lastFetched = cached.lastFetchedUpdatedAt || ""
         if (!lastFetched || (activeUpdatedAt && activeUpdatedAt !== lastFetched)) {
           root.fetchActiveSession()
         }
@@ -750,7 +749,7 @@ Panel {
           var activeItem = root.currentSessionItem()
           var activeUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : ""
           var cached = root.sessionCache[root.selectedSessionId] || {}
-          var lastFetched = cached.lastFetchedUpdatedAt || (root.lastFetchedSessionUpdateAts && root.lastFetchedSessionUpdateAts[root.selectedSessionId]) || ""
+          var lastFetched = cached.lastFetchedUpdatedAt || ""
           if (activeUpdatedAt && lastFetched && activeUpdatedAt !== lastFetched) {
             root.fetchActiveSession()
           }
@@ -842,18 +841,12 @@ Panel {
     if (oldMsgs.length !== serverMsgs.length) return true
     if (oldMsgs.length === 0) return false
 
-    var oldLast = oldMsgs[oldMsgs.length - 1]
-    var newLast = serverMsgs[serverMsgs.length - 1]
-    if (oldLast && newLast) {
-      var oldTs = oldLast.timestamp || oldLast.created_at || ""
-      var newTs = newLast.timestamp || newLast.created_at || ""
-      var oldContent = (oldLast.content !== undefined && oldLast.content !== null) ? oldLast.content : ""
-      var newContent = (newLast.content !== undefined && newLast.content !== null) ? newLast.content : ""
-      var oldReasoning = oldLast.reasoning || ""
-      var newReasoning = newLast.reasoning || ""
-      if (oldTs === newTs && oldContent === newContent && oldLast.role === newLast.role && oldReasoning === newReasoning) {
-        return false
-      }
+    var o = oldMsgs[oldMsgs.length - 1]
+    var n = serverMsgs[serverMsgs.length - 1]
+    if (o && n && o.role === n.role && o.content === n.content &&
+        (o.timestamp || o.created_at || "") === (n.timestamp || n.created_at || "") &&
+        (o.reasoning || "") === (n.reasoning || "")) {
+      return false
     }
 
     return JSON.stringify(oldMsgs) !== JSON.stringify(serverMsgs)
@@ -886,9 +879,6 @@ Panel {
           } else {
             var activeItem = root.currentSessionItem()
             cached.lastFetchedUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : "fetched"
-          }
-          if (root.lastFetchedSessionUpdateAts) {
-            root.lastFetchedSessionUpdateAts[sid] = cached.lastFetchedUpdatedAt || ""
           }
           var updatedCache = Object.assign({}, root.sessionCache)
           updatedCache[sid] = cached
