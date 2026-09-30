@@ -533,17 +533,28 @@ Panel {
     onTriggered: {
       root.refreshSessions()
       if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
-        getSessionProc.buf = ""
-        getSessionProc.errBuf = ""
-        var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
-        var selTarget = root.getSessionTarget(root.selectedSessionId)
-        if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
-        if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
-        getArgs.push("--", root.selectedSessionId)
-        getSessionProc.command = getArgs
-        getSessionProc.running = true
+        var activeItem = root.currentSessionItem()
+        var activeUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : ""
+        var cached = root.sessionCache[root.selectedSessionId] || {}
+        var lastFetched = cached.lastFetchedUpdatedAt || ""
+        if (!lastFetched || (activeUpdatedAt && activeUpdatedAt !== lastFetched)) {
+          root.fetchActiveSession()
+        }
       }
     }
+  }
+
+  function fetchActiveSession() {
+    if (!root.selectedSessionId || root.isCurrentSessionStreaming || getSessionProc.running) return
+    getSessionProc.buf = ""
+    getSessionProc.errBuf = ""
+    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
+    var selTarget = root.getSessionTarget(root.selectedSessionId)
+    if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
+    if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
+    getArgs.push("--", root.selectedSessionId)
+    getSessionProc.command = getArgs
+    getSessionProc.running = true
   }
 
   function triggerRefresh() {
@@ -734,6 +745,14 @@ Panel {
         if (!root.hasSelectedInitialSession && merged.length > 0) {
           root.hasSelectedInitialSession = true
           root.selectSession(merged[0].id)
+        } else if (root.selectedSessionId && !root.isCurrentSessionStreaming && !getSessionProc.running) {
+          var activeItem = root.currentSessionItem()
+          var activeUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : ""
+          var cached = root.sessionCache[root.selectedSessionId] || {}
+          var lastFetched = cached.lastFetchedUpdatedAt || ""
+          if (activeUpdatedAt && lastFetched && activeUpdatedAt !== lastFetched) {
+            root.fetchActiveSession()
+          }
         }
       }
     } catch (e) {
@@ -808,21 +827,29 @@ Panel {
       getSessionProc.signal(15)
       getSessionProc.running = false
     }
-    getSessionProc.buf = ""
-    getSessionProc.errBuf = ""
-    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
-    var selTarget = root.getSessionTarget(canonicalId)
-    if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
-    if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
-    getArgs.push("--", canonicalId)
-    getSessionProc.command = getArgs
-    getSessionProc.running = true
+    root.fetchActiveSession()
 
     root.ensureSessionVisible(canonicalId)
 
     Qt.callLater(function() {
       if (promptInput) promptInput.forceActiveFocus()
     })
+  }
+
+  function areMessagesDifferent(oldMsgs, serverMsgs) {
+    if (!oldMsgs || !serverMsgs) return oldMsgs !== serverMsgs
+    if (oldMsgs.length !== serverMsgs.length) return true
+    if (oldMsgs.length === 0) return false
+
+    var o = oldMsgs[oldMsgs.length - 1]
+    var n = serverMsgs[serverMsgs.length - 1]
+    if (o && n && o.role === n.role && o.content === n.content &&
+        (o.timestamp || o.created_at || "") === (n.timestamp || n.created_at || "") &&
+        (o.reasoning || "") === (n.reasoning || "")) {
+      return false
+    }
+
+    return JSON.stringify(oldMsgs) !== JSON.stringify(serverMsgs)
   }
 
   function parseSessionDetail(text) {
@@ -840,7 +867,18 @@ Panel {
         if (!root.isSessionStreaming(sid)) {
           cached.messages = serverMsgs
           if (res.session.title && !res.session.title.startsWith("Session api-")) {
-            cached.title = root.collapseToSingleLine(res.session.title)
+            var collapsedTitle = root.collapseToSingleLine(res.session.title)
+            cached.title = collapsedTitle
+            if (root.selectedSessionId === sid && root.activeSessionTitle !== collapsedTitle) {
+              root.activeSessionTitle = collapsedTitle
+            }
+          }
+          if (res.session.updated_at) {
+            cached.updated_at = res.session.updated_at
+            cached.lastFetchedUpdatedAt = res.session.updated_at
+          } else {
+            var activeItem = root.currentSessionItem()
+            cached.lastFetchedUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : "fetched"
           }
           var updatedCache = Object.assign({}, root.sessionCache)
           updatedCache[sid] = cached
@@ -848,11 +886,8 @@ Panel {
 
           if (root.selectedSessionId === sid) {
             // Only update root.messages if there is an actual difference to avoid layout churn
-            if (oldMsgs.length !== serverMsgs.length || JSON.stringify(oldMsgs) !== JSON.stringify(serverMsgs)) {
+            if (root.areMessagesDifferent(oldMsgs, serverMsgs)) {
               root.messages = serverMsgs
-              if (res.session.title && !res.session.title.startsWith("Session api-")) {
-                root.activeSessionTitle = root.collapseToSingleLine(res.session.title)
-              }
               if (root.isNearBottom) {
                 root.scrollToBottomInstantly()
               }
@@ -1573,10 +1608,7 @@ Panel {
       if (cleanId && root.selectedSessionId === cleanId) {
         if (!isValidSessionId(cleanId)) return "invalid-session-id"
         if (!getSessionProc.running) {
-          getSessionProc.buf = ""
-          getSessionProc.errBuf = ""
-          getSessionProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-session", "--", cleanId]
-          getSessionProc.running = true
+          root.fetchActiveSession()
         }
       }
       return "ok"

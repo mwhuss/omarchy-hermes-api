@@ -1541,6 +1541,62 @@ async function testDeleteCreatedSessions() {
   console.log(`  ✔ successfully deleted all ${deletedCount} created test sessions and verified removal`);
 }
 
+function testFastPollAndMessageComparison() {
+  console.log('Testing: fastPollTimer optimization and message comparison fast-path (Issue #66)...');
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  const content = fs.readFileSync(widgetPath, 'utf8');
+
+  // 1. Verify fastPollTimer does not launch getSessionProc unconditionally
+  assert(content.includes('id: fastPollTimer'), 'Widget.qml should contain fastPollTimer');
+  assert(!/onTriggered:\s*\{\s*root\.refreshSessions\(\)\s*if\s*\([^)]+\)\s*\{\s*getSessionProc\.buf/.test(content),
+    'fastPollTimer should not unconditionally launch getSessionProc');
+  assert(content.includes('lastFetchedUpdatedAt'), 'Widget.qml should track lastFetchedUpdatedAt');
+  assert(content.includes('fetchActiveSession'), 'Widget.qml should define fetchActiveSession helper');
+
+  // 2. Extract and test areMessagesDifferent logic
+  const areMessagesDifferentMatch = content.match(/function areMessagesDifferent\([^)]*\)\s*\{[\s\S]*?\n  \}/);
+  assert(areMessagesDifferentMatch, 'areMessagesDifferent function should be present in Widget.qml');
+
+  const areMessagesDifferentFn = new Function(`
+    return (${areMessagesDifferentMatch[0]});
+  `)();
+
+  // Test cases:
+  // a) Different lengths -> true
+  const msgs1 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }];
+  const msgs2 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }, { role: 'assistant', content: 'hello', timestamp: '2026-01-01T00:00:01Z' }];
+  assert.strictEqual(areMessagesDifferentFn(msgs1, msgs2), true, 'Different lengths should return true');
+
+  // b) Both empty -> false
+  assert.strictEqual(areMessagesDifferentFn([], []), false, 'Both empty should return false');
+
+  // c) Same length and matching last message -> false (fast-path skipping full stringify)
+  const msgs3 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }];
+  const msgs4 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }];
+  assert.strictEqual(areMessagesDifferentFn(msgs3, msgs4), false, 'Matching last message should return false');
+
+  // d) Same length but last message content differs -> true
+  const msgs5 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }];
+  const msgs6 = [{ role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00Z' }];
+  assert.strictEqual(areMessagesDifferentFn(msgs5, msgs6), true, 'Different content should return true');
+
+  // e) Same length but last message timestamp differs -> true
+  const msgs7 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:00Z' }];
+  const msgs8 = [{ role: 'user', content: 'hi', timestamp: '2026-01-01T00:00:05Z' }];
+  assert.strictEqual(areMessagesDifferentFn(msgs7, msgs8), true, 'Different timestamp should return true');
+
+  // f) Performance: large array fast-path vs stringify
+  const largeArray1 = Array.from({ length: 500 }, (_, i) => ({
+    role: i % 2 === 0 ? 'user' : 'assistant',
+    content: `This is a long message content payload for message index ${i} simulating realistic conversation logs.`,
+    timestamp: new Date(1700000000000 + i * 1000).toISOString()
+  }));
+  const largeArray2 = largeArray1.slice();
+  assert.strictEqual(areMessagesDifferentFn(largeArray1, largeArray2), false, 'Identical large arrays should return false quickly');
+
+  console.log('  ✔ fastPollTimer optimization and message comparison fast-path verified');
+}
+
 function testUrlGuard() {
   console.log('Testing: url-guard allowlist...');
   const guardPath = path.join(__dirname, '..', 'bin', 'url-guard.js');
@@ -1943,6 +1999,7 @@ async function runAllTests() {
     await testManifest();
     testUrlGuard();
     testSanitizeMarkdown();
+    testFastPollAndMessageComparison();
     await testSettings();
     await testMonograms();
     await testListTargetsAndActiveTarget();
