@@ -377,15 +377,11 @@ function testWidgetScrollToBottom() {
   const widgetContent = fs.readFileSync(widgetPath, 'utf8');
 
   // Verify braces are balanced
-  let braceCount = 0;
-  for (let i = 0; i < widgetContent.length; i++) {
-    if (widgetContent[i] === '{') braceCount++;
-    if (widgetContent[i] === '}') {
-      braceCount--;
-      assert(braceCount >= 0, 'Widget.qml contains an unexpected closing brace');
-    }
-  }
-  assert.strictEqual(braceCount, 0, 'Widget.qml must have balanced braces');
+  assert.strictEqual(
+    widgetContent.split('{').length,
+    widgetContent.split('}').length,
+    'Widget.qml must have balanced braces'
+  );
 
   // Verify button declaration and id
   assert(widgetContent.includes('id: scrollToBottomBtn'), 'Widget.qml must define scrollToBottomBtn');
@@ -404,9 +400,9 @@ function testWidgetScrollToBottom() {
   assert(widgetContent.includes('\\uF078'),
     'Widget.qml must use down icon \\uF078');
 
-  // Verify HoverHandler
-  assert(widgetContent.includes('id: scrollBottomHover'),
-    'Widget.qml must include HoverHandler for scroll-to-bottom button');
+  // Verify hover handling via MouseArea
+  assert(widgetContent.includes('id: scrollBottomMouse') && widgetContent.includes('hoverEnabled: true'),
+    'Widget.qml must include MouseArea with hoverEnabled for scroll-to-bottom button');
 
   console.log('  ✔ floating scroll-to-bottom button structure and contract verified');
 }

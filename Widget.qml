@@ -4114,31 +4114,9 @@ Panel {
                 radius: 14
                 implicitWidth: pillRow.implicitWidth + 24
 
-                color: root.background
-                border.color: (scrollBottomHover.hovered || scrollBottomMouse.containsMouse) ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
+                color: scrollBottomMouse.containsMouse ? root.cardHover : root.cardBg
+                border.color: scrollBottomMouse.containsMouse ? root.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.18)
                 border.width: 1
-
-                // Subtle shadow
-                Rectangle {
-                  anchors.fill: parent
-                  anchors.margins: -1
-                  z: -1
-                  radius: parent.radius + 1
-                  color: "transparent"
-                  border.color: Qt.rgba(0, 0, 0, 0.25)
-                  border.width: 1
-                }
-
-                // Card surface tint matching root colors
-                Rectangle {
-                  anchors.fill: parent
-                  radius: parent.radius
-                  color: (scrollBottomHover.hovered || scrollBottomMouse.containsMouse) ? root.cardHover : root.cardBg
-                }
-
-                HoverHandler {
-                  id: scrollBottomHover
-                }
 
                 MouseArea {
                   id: scrollBottomMouse
@@ -4161,7 +4139,7 @@ Panel {
                     text: "\uF078" // Chevron down
                     font.family: root.fontFamily
                     font.pixelSize: 10
-                    color: (scrollBottomHover.hovered || scrollBottomMouse.containsMouse) ? root.accent : root.foreground
+                    color: scrollBottomMouse.containsMouse ? root.accent : root.foreground
                     Layout.alignment: Qt.AlignVCenter
                   }
 
@@ -4171,7 +4149,7 @@ Panel {
                     font.family: root.fontFamily
                     font.pixelSize: 11
                     font.weight: Font.Medium
-                    color: (scrollBottomHover.hovered || scrollBottomMouse.containsMouse) ? root.accent : root.foreground
+                    color: scrollBottomMouse.containsMouse ? root.accent : root.foreground
                     Layout.alignment: Qt.AlignVCenter
                   }
                 }
