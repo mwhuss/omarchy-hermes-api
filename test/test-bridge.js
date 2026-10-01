@@ -74,6 +74,7 @@ function startMockServer() {
           });
           res.write(': ping\n\n');
           res.write('data: {"choices":[{"delta":{"role":"assistant","content":"Mock test response"}}]}\n\n');
+          res.write('data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":25,"total_tokens":37}}\n\n');
           res.write('data: [DONE]\n\n');
           res.end();
         });
@@ -275,6 +276,12 @@ async function testStreamChat() {
 
   assert(types.includes('start'), 'Should have a start event');
   assert(types.includes('done') || types.includes('error'), 'Should finish with done or error event');
+  const doneEvent = events.find(e => e.type === 'done');
+  assert(doneEvent, 'Should have a done event');
+  assert(doneEvent.usage, 'done event should contain usage object');
+  assert.strictEqual(doneEvent.usage.prompt_tokens, 12, 'prompt_tokens should match');
+  assert.strictEqual(doneEvent.usage.completion_tokens, 25, 'completion_tokens should match');
+  assert.strictEqual(doneEvent.usage.total_tokens, 37, 'total_tokens should match');
   console.log('  ✔ stream-chat passed with events:', types.filter((v, i, a) => a.indexOf(v) === i).join(', '));
 
   console.log('Testing: stream-chat with --json-input stdin pipeline...');
@@ -508,9 +515,10 @@ async function testSettings() {
           url: 'http://127.0.0.1',
           port: 8642,
           apiKey: 'test-key',
+          contextWindow: 128000,
           profiles: [
             { name: 'default', apiKey: '' },
-            { name: 'coder', apiKey: 'coder-key' }
+            { name: 'coder', apiKey: 'coder-key', contextWindow: 96000 }
           ]
         }
       ]
@@ -531,6 +539,8 @@ async function testSettings() {
     const savedData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
     assert.strictEqual(savedData.endpoints[0].profiles.length, 1, 'Only custom profiles should be saved in JSON');
     assert.strictEqual(savedData.endpoints[0].profiles[0].name, 'coder', 'Only custom coder profile should be saved');
+    assert.strictEqual(savedData.endpoints[0].contextWindow, 128000, 'endpoint contextWindow should be saved');
+    assert.strictEqual(savedData.endpoints[0].profiles[0].contextWindow, 96000, 'profile contextWindow should be saved');
     assert.strictEqual(savedData.endpoints[0].profiles.some(p => p.name === 'default'), false, 'Default profile must never be saved in JSON');
     console.log('  ✔ default profile omission from JSON verified');
 
@@ -560,6 +570,24 @@ async function testSettings() {
     })]);
     const invalidPortJson = JSON.parse(invalidPortRes.stdout);
     assert.strictEqual(invalidPortJson.success, false, 'invalid port should fail');
+
+    // Invalid contextWindow
+    const invalidCwRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 8642, contextWindow: -5 }]
+    })]);
+    const invalidCwJson = JSON.parse(invalidCwRes.stdout);
+    assert.strictEqual(invalidCwJson.success, false, 'negative contextWindow should fail');
+
+    const invalidProfCwRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{
+        name: 'Test',
+        url: 'http://127.0.0.1',
+        port: 8642,
+        profiles: [{ name: 'agent1', contextWindow: 'abc' }]
+      }]
+    })]);
+    const invalidProfCwJson = JSON.parse(invalidProfCwRes.stdout);
+    assert.strictEqual(invalidProfCwJson.success, false, 'non-numeric profile contextWindow should fail');
 
     // Empty name
     const emptyNameRes = await runBridge(['save-settings', JSON.stringify({
@@ -1484,6 +1512,51 @@ async function testMockSseStreamReasoningCustomEvent() {
   }
 }
 
+async function testMockSseStreamWithTokenUsage() {
+  console.log('Testing: SSE stream token usage parsing and done event forwarding...');
+  const server = http.createServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      res.write('data: {"choices":[{"delta":{"content":"Token usage test"}}]}\n\n');
+      res.write('data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":128,"total_tokens":170}}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'test token usage'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${port}`,
+      HERMES_API_SERVER_PORT: String(port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const lines = res.stdout.trim().split('\n').filter(Boolean);
+    const events = lines.map(l => JSON.parse(l));
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'done event should be emitted');
+    assert(doneEvent.usage, 'done event should have usage object');
+    assert.strictEqual(doneEvent.usage.prompt_tokens, 42, 'prompt_tokens should be 42');
+    assert.strictEqual(doneEvent.usage.completion_tokens, 128, 'completion_tokens should be 128');
+    assert.strictEqual(doneEvent.usage.total_tokens, 170, 'total_tokens should be 170');
+
+    console.log('  ✔ token usage captured from SSE stream and forwarded in done event payload');
+  } finally {
+    server.close();
+  }
+}
+
 async function testSecurityHardening() {
   console.log('Testing: bridge security hardening (H-1 to H-3)...');
   const { readBoundedFile, ensurePrivateDir } = require(bridgePath);
@@ -2032,6 +2105,7 @@ async function runAllTests() {
     await testMockSseStreamWithCustomEvents();
     await testMockSseStreamWithReasoningDeltas();
     await testMockSseStreamReasoningCustomEvent();
+    await testMockSseStreamWithTokenUsage();
     await testManifest();
     testWidgetScrollToBottom();
     testUrlGuard();

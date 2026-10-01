@@ -623,6 +623,7 @@ Panel {
                 profileName: prof.name,
                 isDefault: prof.isDefault === true,
                 displayName: prof.displayName || (prof.isDefault ? ep.name : prof.name),
+                contextWindow: prof.isDefault ? (prof.contextWindow || ep.contextWindow || null) : (prof.contextWindow || null),
                 monogram: prof.monogram || root.getMonogram(prof.isDefault ? ep.name : prof.name),
                 color: prof.color || root.getAgentColor(prof.isDefault ? ep.name : prof.name),
                 connected: ep.connected === true,
@@ -880,8 +881,14 @@ Panel {
             var activeItem = root.currentSessionItem()
             cached.lastFetchedUpdatedAt = (activeItem && activeItem.updated_at) ? activeItem.updated_at : "fetched"
           }
-          var updatedCache = Object.assign({}, root.sessionCache)
-          updatedCache[sid] = cached
+          if (res.session.total_tokens && res.session.total_tokens > 0) {
+            cached.total_tokens = res.session.total_tokens
+            cached.last_usage = {
+              prompt_tokens: res.session.input_tokens || 0,
+              completion_tokens: res.session.output_tokens || 0,
+              total_tokens: res.session.total_tokens
+            }
+          }
           root.updateSessionCache(sid, cached)
 
           if (root.selectedSessionId === sid) {
@@ -1251,7 +1258,7 @@ Panel {
       } else if (ev.type === "done") {
         var replyText = ev.full_text || streamInfo.streamingContent || ""
         var replyReasoning = ev.full_reasoning || streamInfo.streamingReasoning || ""
-        root.finishSessionStream(targetSessionId, replyText, false, streamInfo.toolEvents, replyReasoning)
+        root.finishSessionStream(targetSessionId, replyText, false, streamInfo.toolEvents, replyReasoning, ev.usage)
       } else if (ev.type === "error") {
         root.finishSessionStream(targetSessionId, ev.error || "Generation error", true, streamInfo.toolEvents, streamInfo.streamingReasoning || "")
       }
@@ -1260,7 +1267,7 @@ Panel {
     }
   }
 
-  function finishSessionStream(targetSessionId, replyText, isError, toolEvents, reasoning) {
+  function finishSessionStream(targetSessionId, replyText, isError, toolEvents, reasoning, usage) {
     var streamInfo = root.activeStreams[targetSessionId]
     if (streamInfo && streamInfo.proc) {
       try {
@@ -1276,15 +1283,26 @@ Panel {
 
     var cached = root.sessionCache[targetSessionId] || {}
     var msgs = (cached.messages || []).slice()
-    msgs.push({
+    var assistantTurn = {
       role: "assistant",
       content: isError ? ("⚠️ Error: " + replyText) : replyText,
       timestamp: new Date().toISOString(),
       tool_events: (toolEvents || []).slice(),
       reasoning: reasoning || null
-    })
+    }
+    if (usage && typeof usage === "object") {
+      assistantTurn.usage = usage
+    }
+    msgs.push(assistantTurn)
     cached.messages = msgs
     cached.updated_at = new Date().toISOString()
+    if (usage && typeof usage === "object") {
+      cached.last_usage = usage
+      var turnTokens = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0))
+      if (turnTokens > 0) {
+        cached.total_tokens = (cached.total_tokens || 0) + turnTokens
+      }
+    }
     root.updateSessionCache(targetSessionId, cached)
 
     if (root.selectedSessionId === targetSessionId) {
@@ -1411,6 +1429,98 @@ Panel {
     } catch (e) {
       return ""
     }
+  }
+
+  function formatTokenCount(count) {
+    if (typeof count !== "number" || isNaN(count) || count <= 0) return "0"
+    if (count < 1000) return String(count)
+    if (count < 1000000) return (count / 1000).toFixed(1).replace(/\.0$/, "") + "k"
+    return (count / 1000000).toFixed(1).replace(/\.0$/, "") + "M"
+  }
+
+  function formatTokens(count) {
+    if (typeof count !== "number" || isNaN(count) || count <= 0) return ""
+    return formatTokenCount(count) + " tokens"
+  }
+
+  function getSessionContextCeiling(sessionId) {
+    var sid = sessionId || root.selectedSessionId
+    if (!sid) return 0
+    var target = root.getSessionTarget(sid)
+    if (!target) return 0
+    var pName = target.profileName || "default"
+    for (var i = 0; i < root.allAgentTargets.length; i++) {
+      var t = root.allAgentTargets[i]
+      if (t.endpointId === target.endpointId && (t.profileName || "default") === pName) {
+        if (typeof t.contextWindow === "number" && t.contextWindow > 0) {
+          return t.contextWindow
+        }
+        if (pName !== "default") {
+          return 0
+        }
+      }
+    }
+    if (pName === "default") {
+      for (var j = 0; j < root.targetEndpoints.length; j++) {
+        var ep = root.targetEndpoints[j]
+        if (ep.id === target.endpointId || ep.endpointId === target.endpointId) {
+          if (typeof ep.contextWindow === "number" && ep.contextWindow > 0) {
+            return ep.contextWindow
+          }
+        }
+      }
+    }
+    return 0
+  }
+
+  function getSessionTokenUsage(sessionId, optItem) {
+    var sid = sessionId || root.selectedSessionId
+    if (!sid) return null
+
+    // 1. Check in-memory sessionCache (freshest for active streams)
+    if (root.sessionCache) {
+      var cached = root.sessionCache[sid]
+      if (!cached && sid.indexOf(":") !== -1) {
+        var rawPart = sid.split(":").slice(2).join(":")
+        cached = root.sessionCache[rawPart]
+      }
+      if (cached) {
+        if (cached.last_usage && typeof cached.last_usage === "object" && typeof cached.last_usage.total_tokens === "number") {
+          return cached.last_usage
+        }
+        if (typeof cached.total_tokens === "number" && cached.total_tokens > 0) {
+          return { total_tokens: cached.total_tokens }
+        }
+        if (Array.isArray(cached.messages)) {
+          for (var i = cached.messages.length - 1; i >= 0; i--) {
+            if (cached.messages[i] && cached.messages[i].usage) {
+              return cached.messages[i].usage
+            }
+          }
+        }
+      }
+    }
+
+    // 2. Check optItem or root.sessions directly (from list-sessions, never evicted by LRU)
+    var matchedItem = (optItem && (optItem.id === sid || optItem.raw_id === sid || (optItem.raw_id && sid.indexOf(":" + optItem.raw_id) !== -1))) ? optItem : null
+    if (!matchedItem && root.sessions && Array.isArray(root.sessions)) {
+      for (var s = 0; s < root.sessions.length; s++) {
+        var it = root.sessions[s]
+        if (it && (it.id === sid || it.raw_id === sid || (it.raw_id && sid.indexOf(":" + it.raw_id) !== -1))) {
+          matchedItem = it
+          break
+        }
+      }
+    }
+    if (matchedItem && typeof matchedItem.total_tokens === "number" && matchedItem.total_tokens > 0) {
+      return {
+        prompt_tokens: matchedItem.input_tokens || 0,
+        completion_tokens: matchedItem.output_tokens || 0,
+        total_tokens: matchedItem.total_tokens
+      }
+    }
+
+    return null
   }
 
   function sanitizePlain(str, maxLen) {
@@ -1727,7 +1837,8 @@ Panel {
     if (!ep.profiles) ep.profiles = []
     ep.profiles.push({
       name: "",
-      apiKey: ""
+      apiKey: "",
+      contextWindow: null
     })
     root.settingsEndpoints = eps
     root.settingsErrorMessage = ""
@@ -1775,6 +1886,18 @@ Panel {
         root.settingsErrorMessage = "Endpoint '" + name + "' port must be between 1 and 65535."
         return
       }
+      function parseCw(val, label) {
+        if (val === undefined || val === null || String(val).trim() === "") return { ok: true, val: null }
+        var n = parseInt(val, 10)
+        if (isNaN(n) || n < 1) {
+          root.settingsErrorMessage = label + " context window must be a positive integer."
+          return { ok: false }
+        }
+        return { ok: true, val: n }
+      }
+      var epCw = parseCw(ep.contextWindow, "Endpoint '" + name + "'")
+      if (!epCw.ok) return
+      if (epCw.val !== null) ep.contextWindow = epCw.val; else delete ep.contextWindow
       if (ep.profiles) {
         // Strip any 'default' profile - default profile is purely ornamental in UI and never saved
         ep.profiles = ep.profiles.filter(function(p) {
@@ -1790,6 +1913,9 @@ Panel {
             root.settingsErrorMessage = "Profile name 'default' is reserved for the endpoint hermes-agent."
             return
           }
+          var profCw = parseCw(ep.profiles[j].contextWindow, "Profile '" + profName + "'")
+          if (!profCw.ok) return
+          if (profCw.val !== null) ep.profiles[j].contextWindow = profCw.val; else delete ep.profiles[j].contextWindow
         }
       } else {
         ep.profiles = []
@@ -2436,7 +2562,7 @@ Panel {
             spacing: 8
 
             Text {
-  textFormat: Text.PlainText
+              textFormat: Text.PlainText
               text: root.setting("icon", "\u{f06d3}")
               font.family: root.fontFamily
               font.pixelSize: 14
@@ -2445,7 +2571,7 @@ Panel {
 
             // Settings Title (when settings is open)
             Text {
-  textFormat: Text.PlainText
+              textFormat: Text.PlainText
               visible: root.isSettingsOpen
               text: root.serverName + " • Settings"
               font.family: root.fontFamily
@@ -2490,7 +2616,7 @@ Panel {
                 }
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: root.activeTargetDisplayName()
                   font.family: root.fontFamily
                   font.pixelSize: 13
@@ -2499,7 +2625,7 @@ Panel {
                 }
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: "\uF078" // Chevron down
                   font.family: root.fontFamily
                   font.pixelSize: 9
@@ -2537,7 +2663,7 @@ Panel {
                 spacing: 6
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: "\uF067" // Plus icon
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -2545,7 +2671,7 @@ Panel {
                 }
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: "New Session"
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -2571,7 +2697,7 @@ Panel {
               }
 
               Text {
-  textFormat: Text.PlainText
+                textFormat: Text.PlainText
                 id: refreshIcon
                 anchors.centerIn: parent
                 text: "\uF021" // Refresh icon
@@ -2647,7 +2773,7 @@ Panel {
               }
 
               Text {
-  textFormat: Text.PlainText
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: "\uF013" // Gear icon
                 font.family: root.fontFamily
@@ -2829,7 +2955,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: root.getSessionMonogram(modelData)
@@ -2846,7 +2972,7 @@ Panel {
                       spacing: 2
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: modelData.title || "Untitled Session"
                         font.family: root.fontFamily
                         font.pixelSize: 11
@@ -2858,7 +2984,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: root.getSessionAgentName(modelData)
                         font.family: root.fontFamily
                         font.pixelSize: 9
@@ -2895,7 +3021,7 @@ Panel {
                 }
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: root.filteredSessions.length === 0 ? "No sessions found" : ""
                   font.family: root.fontFamily
@@ -2977,7 +3103,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: root.getSessionMonogram(root.currentSessionItem())
@@ -2989,7 +3115,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: root.selectedSessionId ? root.activeSessionTitle : "New Session"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -3000,23 +3126,66 @@ Panel {
                       Layout.fillWidth: true
                     }
 
-                    // Target Agent display pill
+                    // Context window / token usage badge
                     Rectangle {
+                      id: sessionTokenBadge
+                      property var curItem: root.currentSessionItem()
+                      property var tokenUsage: {
+                        root.sessionCache;
+                        return root.getSessionTokenUsage(root.selectedSessionId, curItem);
+                      }
+                      property int tokenCount: tokenUsage ? (tokenUsage.total_tokens || ((tokenUsage.prompt_tokens || 0) + (tokenUsage.completion_tokens || 0))) : 0
+                      property int contextCeiling: root.getSessionContextCeiling(root.selectedSessionId)
+                      property bool hasCeiling: contextCeiling > 0
+                      property int percentUsed: (hasCeiling && tokenCount > 0) ? Math.min(100, Math.round((tokenCount / contextCeiling) * 100)) : 0
+                      property bool isAlert: hasCeiling ? (percentUsed >= 90) : (tokenCount >= 100000)
+                      property bool isWarning: hasCeiling ? (percentUsed >= 70) : (tokenCount >= 64000)
+                      visible: !!root.selectedSessionId && tokenCount > 0
                       height: 18
                       radius: 9
-                      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
-                      implicitWidth: targetBadgeText.implicitWidth + 12
+                      color: isAlert
+                        ? Qt.rgba(239/255, 68/255, 68/255, 0.15)
+                        : (isWarning
+                            ? Qt.rgba(245/255, 158/255, 11/255, 0.15)
+                            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07))
+                      border.color: isAlert
+                        ? Qt.rgba(239/255, 68/255, 68/255, 0.4)
+                        : (isWarning
+                            ? Qt.rgba(245/255, 158/255, 11/255, 0.4)
+                            : "transparent")
+                      border.width: (isWarning || isAlert) ? 1 : 0
+                      implicitWidth: sessionTokenRow.implicitWidth + 12
                       Layout.alignment: Qt.AlignVCenter
 
-                      Text {
-  textFormat: Text.PlainText
-                        id: targetBadgeText
+                      RowLayout {
+                        id: sessionTokenRow
                         anchors.centerIn: parent
-                        text: root.getSessionAgentDisplayName(root.currentSessionItem())
-                        font.family: root.fontFamily
-                        font.pixelSize: 9
-                        font.weight: Font.Medium
-                        color: root.dimText
+                        spacing: 3
+
+                        Text {
+                          textFormat: Text.PlainText
+                          text: sessionTokenBadge.isAlert ? "⚠️" : "\uF080"
+                          visible: sessionTokenBadge.isWarning || sessionTokenBadge.isAlert
+                          font.family: root.fontFamily
+                          font.pixelSize: 8
+                          color: sessionTokenBadge.isAlert
+                            ? "#EF4444"
+                            : (sessionTokenBadge.isWarning ? "#F59E0B" : root.subtleText)
+                        }
+
+                        Text {
+                          id: sessionTokenText
+                          textFormat: Text.PlainText
+                          text: sessionTokenBadge.hasCeiling
+                            ? (root.formatTokenCount(sessionTokenBadge.tokenCount) + "/" + root.formatTokenCount(sessionTokenBadge.contextCeiling) + " (" + sessionTokenBadge.percentUsed + "%)")
+                            : root.formatTokenCount(sessionTokenBadge.tokenCount)
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          font.weight: Font.Medium
+                          color: sessionTokenBadge.isAlert
+                            ? "#EF4444"
+                            : (sessionTokenBadge.isWarning ? "#F59E0B" : root.dimText)
+                        }
                       }
                     }
 
@@ -3045,7 +3214,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF044" // Edit / Pen icon
                         font.family: root.fontFamily
@@ -3074,7 +3243,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF1F8" // Trash icon
                         font.family: root.fontFamily
@@ -3096,7 +3265,7 @@ Panel {
                     spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Delete this session?"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -3128,7 +3297,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00C" // Checkmark
                         font.family: root.fontFamily
@@ -3153,7 +3322,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00D" // Times / Cross
                         font.family: root.fontFamily
@@ -3213,7 +3382,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00C" // Checkmark
                         font.family: root.fontFamily
@@ -3238,7 +3407,7 @@ Panel {
                       }
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         text: "\uF00D" // Times / Cross
                         font.family: root.fontFamily
@@ -3304,7 +3473,7 @@ Panel {
                     spacing: 12
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: root.setting("icon", "\u{f06d3}")
                       font.family: root.fontFamily
                       font.pixelSize: 32
@@ -3313,7 +3482,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "How can " + root.currentPromptAgentName() + " help you today?"
                       font.family: root.fontFamily
                       font.pixelSize: 14
@@ -3323,7 +3492,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Type a prompt below to assign a task or start a conversation."
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -3361,7 +3530,7 @@ Panel {
                         spacing: 6
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: "\uF013" // Gear icon
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3369,7 +3538,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: root.sessionSystemPrompt ? "Custom System Prompt Active" : "Set System Prompt (Optional)"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -3378,7 +3547,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: root.showSystemPromptInput ? "\uF077" : "\uF078" // Chevron up/down
                           font.family: root.fontFamily
                           font.pixelSize: 8
@@ -3410,7 +3579,7 @@ Panel {
                         onTextChanged: root.sessionSystemPrompt = text
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           anchors.top: parent.top
                           anchors.left: parent.left
                           text: "e.g. You are a concise Linux assistant who writes clean bash scripts..."
@@ -3596,7 +3765,7 @@ Panel {
                               spacing: 6
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: modelData.emoji || "\uF0AD"
                                 font.family: modelData.emoji ? "sans-serif" : root.fontFamily
                                 font.pixelSize: 11
@@ -3604,7 +3773,7 @@ Panel {
                               }
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: {
                                   var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
                                   var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
@@ -3620,7 +3789,7 @@ Panel {
                               }
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: liveEventBox.expanded ? "\uF077" : "\uF078"
                                 font.family: root.fontFamily
                                 font.pixelSize: 9
@@ -3630,7 +3799,7 @@ Panel {
                             }
 
                             Text {
-  textFormat: Text.PlainText
+                              textFormat: Text.PlainText
                               visible: liveEventBox.expanded && (!!modelData.output || !!modelData.detail)
                               text: modelData.output || modelData.detail || ""
                               font.family: "monospace"
@@ -3690,7 +3859,7 @@ Panel {
                               spacing: 6
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: "\uF0AD" // Wrench
                                 font.family: root.fontFamily
                                 font.pixelSize: 10
@@ -3698,7 +3867,7 @@ Panel {
                               }
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: {
                                   var name = String(modelData.name || "tool").replace(/\s+/g, " ").trim()
                                   var summary = String(modelData.summary || "").replace(/\s+/g, " ").trim()
@@ -3714,7 +3883,7 @@ Panel {
                               }
 
                               Text {
-  textFormat: Text.PlainText
+                                textFormat: Text.PlainText
                                 text: toolCallBox.expanded ? "\uF077" : "\uF078"
                                 font.family: root.fontFamily
                                 font.pixelSize: 9
@@ -3723,7 +3892,7 @@ Panel {
                             }
 
                             Text {
-  textFormat: Text.PlainText
+                              textFormat: Text.PlainText
                               visible: toolCallBox.expanded
                               text: modelData.arguments || modelData.summary || ""
                               font.family: "monospace"
@@ -3782,7 +3951,7 @@ Panel {
                             spacing: 6
 
                             Text {
-  textFormat: Text.PlainText
+                              textFormat: Text.PlainText
                               text: "\uF0AD"
                               font.family: root.fontFamily
                               font.pixelSize: 10
@@ -3790,7 +3959,7 @@ Panel {
                             }
 
                             Text {
-  textFormat: Text.PlainText
+                              textFormat: Text.PlainText
                               text: {
                                 var prefix = "Tool Output" + (modelData.tool_name ? (" (" + modelData.tool_name + ")") : "") + ": "
                                 var preview = String(modelData.tool_preview || modelData.content || "").replace(/\s+/g, " ").trim()
@@ -3806,7 +3975,7 @@ Panel {
                             }
 
                             Text {
-  textFormat: Text.PlainText
+                              textFormat: Text.PlainText
                               text: toolResultBox.expanded ? "\uF077" : "\uF078"
                               font.family: root.fontFamily
                               font.pixelSize: 9
@@ -3880,15 +4049,43 @@ Panel {
                         }
                       }
 
-                      // Subtle timestamp
-                      Text {
-  textFormat: Text.PlainText
+                      // Message timestamp and turn token count badge
+                      RowLayout {
                         Layout.alignment: modelData.role === "user" ? Qt.AlignRight : Qt.AlignLeft
-                        text: root.formatTime(modelData.timestamp)
-                        font.family: root.fontFamily
-                        font.pixelSize: 9
-                        color: root.subtleText
-                        visible: !!modelData.timestamp
+                        spacing: 5
+                        visible: !!modelData.timestamp || (modelData.role === "assistant" && !!modelData.usage)
+
+                        Text {
+                          textFormat: Text.PlainText
+                          text: root.formatTime(modelData.timestamp)
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          color: root.subtleText
+                          visible: !!modelData.timestamp
+                        }
+
+                        // Compact token count badge for assistant turn
+                        Rectangle {
+                          id: msgTokenBadge
+                          property int tokens: modelData.usage ? (modelData.usage.total_tokens || ((modelData.usage.prompt_tokens || 0) + (modelData.usage.completion_tokens || 0))) : 0
+                          visible: modelData.role === "assistant" && tokens > 0
+                          height: 14
+                          radius: 3
+                          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                          implicitWidth: msgTokenBadgeText.implicitWidth + 8
+                          Layout.alignment: Qt.AlignVCenter
+
+                          Text {
+                            textFormat: Text.PlainText
+                            id: msgTokenBadgeText
+                            anchors.centerIn: parent
+                            text: root.formatTokens(msgTokenBadge.tokens)
+                            font.family: root.fontFamily
+                            font.pixelSize: 8
+                            font.weight: Font.Medium
+                            color: root.dimText
+                          }
+                        }
                       }
                     }
                   }
@@ -3922,7 +4119,7 @@ Panel {
                           spacing: 6
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             text: modelData.emoji || "\uF0AD"
                             font.family: modelData.emoji ? "sans-serif" : root.fontFamily
                             font.pixelSize: 11
@@ -3930,7 +4127,7 @@ Panel {
                           }
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             text: {
                               var tool = String(modelData.tool || "tool").replace(/\s+/g, " ").trim()
                               var label = String(modelData.label || "").replace(/\s+/g, " ").trim()
@@ -4041,7 +4238,7 @@ Panel {
                         visible: !root.currentStreamingContent && !root.currentStreamingReasoning
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: "●"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -4056,7 +4253,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: root.getSessionAgentName(root.currentSessionItem()) + " is thinking..."
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4296,7 +4493,7 @@ Panel {
                   }
 
                   Text {
-  textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: root.isCurrentSessionStreaming ? "\uF04D" : "\uF1D8" // Stop vs Send Paper Airplane
                     font.family: root.fontFamily
@@ -4331,7 +4528,7 @@ Panel {
                 Layout.fillWidth: true
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: "Endpoints"
                   font.family: root.fontFamily
                   font.pixelSize: 12
@@ -4362,7 +4559,7 @@ Panel {
                     spacing: 4
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "\uF067" // Plus
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4370,7 +4567,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Add"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4426,7 +4623,7 @@ Panel {
                         spacing: 2
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: modelData.name || "Untitled Endpoint"
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4437,7 +4634,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: (modelData.url || "http://127.0.0.1") + (modelData.port ? (":" + modelData.port) : "")
                           font.family: root.fontFamily
                           font.pixelSize: 9
@@ -4455,7 +4652,7 @@ Panel {
                     height: 100
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "No endpoints\nClick + Add"
                       font.family: root.fontFamily
@@ -4576,7 +4773,7 @@ Panel {
                   height: 200
 
                   Text {
-  textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent
                     text: "Select an endpoint on the left or click '+ Add' to create one."
                     font.family: root.fontFamily
@@ -4596,7 +4793,7 @@ Panel {
                     Layout.fillWidth: true
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Endpoint Configuration"
                       font.family: root.fontFamily
                       font.pixelSize: 12
@@ -4636,7 +4833,7 @@ Panel {
                         spacing: 4
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: "\uF1F8" // Trash
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -4644,7 +4841,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: root.isConfirmingDeleteEndpoint ? "Confirm Delete?" : "Delete Endpoint"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -4661,7 +4858,7 @@ Panel {
                     spacing: 4
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Display Name"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4710,7 +4907,7 @@ Panel {
                       spacing: 4
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: "URL (e.g. http://127.0.0.1)"
                         font.family: root.fontFamily
                         font.pixelSize: 10
@@ -4733,6 +4930,7 @@ Panel {
                           anchors.leftMargin: 8
                           anchors.rightMargin: 8
                           maximumLength: 2048
+                          horizontalAlignment: TextInput.AlignLeft
                           verticalAlignment: TextInput.AlignVCenter
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -4754,7 +4952,7 @@ Panel {
                       spacing: 4
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: "Port"
                         font.family: root.fontFamily
                         font.pixelSize: 10
@@ -4799,7 +4997,7 @@ Panel {
                     spacing: 4
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Endpoint API Key"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -4856,7 +5054,7 @@ Panel {
                           }
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             anchors.centerIn: parent
                             text: root.maskEndpointApiKey ? "\uF070" : "\uF06E"
                             font.family: root.fontFamily
@@ -4882,7 +5080,7 @@ Panel {
                     ColumnLayout {
                       spacing: 2
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: "Agent Profiles"
                         font.family: root.fontFamily
                         font.pixelSize: 12
@@ -4890,7 +5088,7 @@ Panel {
                         color: root.foreground
                       }
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         text: "Profiles inherit the endpoint key unless overridden"
                         font.family: root.fontFamily
                         font.pixelSize: 9
@@ -4921,7 +5119,7 @@ Panel {
                         spacing: 4
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: "\uF067"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -4929,7 +5127,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: "Add Profile"
                           font.family: root.fontFamily
                           font.pixelSize: 10
@@ -4945,102 +5143,121 @@ Panel {
                     Layout.fillWidth: true
                     spacing: 6
 
-                    // Ornamental Default Profile (Purely visual representation of the endpoint's base hermes-agent)
+                    // Default Profile Section Card
                     Rectangle {
                       Layout.fillWidth: true
-                      height: 38
-                      radius: 6
+                      implicitHeight: defaultProfCol.implicitHeight + 20
+                      Layout.preferredHeight: implicitHeight
+                      radius: 8
                       color: root.cardBg
                       border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.25)
 
-                      RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 8
-                        anchors.rightMargin: 8
+                      ColumnLayout {
+                        id: defaultProfCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 10
                         spacing: 8
 
-                        // Name & badge
-                        Rectangle {
-                          Layout.preferredWidth: 150
-                          Layout.fillHeight: true
-                          color: "transparent"
-
-                          RowLayout {
-                            anchors.fill: parent
-                            spacing: 6
-
-                            Text {
-  textFormat: Text.PlainText
-                              text: "default"
-                              font.family: root.fontFamily
-                              font.pixelSize: 11
-                              font.weight: Font.DemiBold
-                              color: root.foreground
-                            }
-
-                            Rectangle {
-                              radius: 3
-                              color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
-                              border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
-                              implicitWidth: defaultBadgeText.implicitWidth + 8
-                              implicitHeight: 16
-
-                              Text {
-  textFormat: Text.PlainText
-                                id: defaultBadgeText
-                                anchors.centerIn: parent
-                                text: "hermes-agent"
-                                font.family: root.fontFamily
-                                font.pixelSize: 9
-                                font.weight: Font.Medium
-                                color: root.accent
-                              }
-                            }
-
-                            Item { Layout.fillWidth: true }
-                          }
-                        }
-
-                        Rectangle {
-                          Layout.fillHeight: true
-                          width: 1
-                          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                        }
-
-                        // Credentials representation
-                        Item {
+                        // Section Header: Name & Badge & Lock
+                        RowLayout {
                           Layout.fillWidth: true
-                          Layout.fillHeight: true
-
-                          RowLayout {
-                            anchors.fill: parent
-                            spacing: 6
-
-                            Text {
-  textFormat: Text.PlainText
-                              Layout.fillWidth: true
-                              text: "Inherits endpoint credentials"
-                              font.family: root.fontFamily
-                              font.pixelSize: 10
-                              color: root.dimText
-                              elide: Text.ElideRight
-                            }
-                          }
-                        }
-
-                        // Lock indicator (immutable)
-                        Rectangle {
-                          width: 22
-                          height: 22
-                          color: "transparent"
+                          spacing: 6
 
                           Text {
-  textFormat: Text.PlainText
-                            anchors.centerIn: parent
+                            textFormat: Text.PlainText
+                            text: "default"
+                            font.family: root.fontFamily
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            color: root.foreground
+                          }
+
+                          Rectangle {
+                            radius: 3
+                            color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.15)
+                            border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.35)
+                            implicitWidth: defaultBadgeText.implicitWidth + 8
+                            implicitHeight: 16
+
+                            Text {
+                              textFormat: Text.PlainText
+                              id: defaultBadgeText
+                              anchors.centerIn: parent
+                              text: "hermes-agent"
+                              font.family: root.fontFamily
+                              font.pixelSize: 9
+                              font.weight: Font.Medium
+                              color: root.accent
+                            }
+                          }
+
+                          Item { Layout.fillWidth: true }
+
+                          Text {
+                            textFormat: Text.PlainText
                             text: "\uF023" // Lock icon
                             font.family: root.fontFamily
                             font.pixelSize: 11
                             color: root.dimText
+                          }
+                        }
+
+                        // Context Window Field
+                        ColumnLayout {
+                          Layout.fillWidth: true
+                          spacing: 4
+
+                          Text {
+                            textFormat: Text.PlainText
+                            text: "Context Window (tokens)"
+                            font.family: root.fontFamily
+                            font.pixelSize: 10
+                            font.weight: Font.Medium
+                            color: root.dimText
+                          }
+
+                          Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 30
+                            height: 30
+                            radius: 6
+                            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                            border.color: defaultCtxInput.activeFocus
+                              ? root.accent
+                              : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                            TextInput {
+                              id: defaultCtxInput
+                              anchors.fill: parent
+                              anchors.leftMargin: 8
+                              anchors.rightMargin: 8
+                              maximumLength: 8
+                              verticalAlignment: TextInput.AlignVCenter
+                              font.family: root.fontFamily
+                              font.pixelSize: 11
+                              color: root.foreground
+                              clip: true
+                              text: settingsFormCol.curEp && settingsFormCol.curEp.contextWindow ? String(settingsFormCol.curEp.contextWindow) : ""
+                              onTextChanged: {
+                                if (activeFocus && settingsFormCol.curEp) {
+                                  root.updateEndpointField(root.selectedEndpointIndex, "contextWindow", text)
+                                }
+                              }
+                            }
+
+                            Text {
+                              textFormat: Text.PlainText
+                              anchors.verticalCenter: parent.verticalCenter
+                              anchors.left: parent.left
+                              anchors.leftMargin: 8
+                              text: "e.g. 128000 (optional)"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.subtleText
+                              visible: !defaultCtxInput.text || defaultCtxInput.text.length === 0
+                            }
                           }
                         }
                       }
@@ -5050,142 +5267,273 @@ Panel {
                     Repeater {
                       model: (settingsFormCol.curEp && settingsFormCol.curEp.profiles) ? settingsFormCol.curEp.profiles : []
                       delegate: Rectangle {
-                        id: profRowItem
+                        id: profCardItem
                         Layout.fillWidth: true
-                        height: 38
-                        radius: 6
+                        implicitHeight: profCardCol.implicitHeight + 20
+                        Layout.preferredHeight: implicitHeight
+                        radius: 8
                         color: root.cardBg
-                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.10)
 
                         property bool maskProfKey: true
 
-                        RowLayout {
-                          anchors.fill: parent
-                          anchors.leftMargin: 8
-                          anchors.rightMargin: 8
+                        ColumnLayout {
+                          id: profCardCol
+                          anchors.left: parent.left
+                          anchors.right: parent.right
+                          anchors.top: parent.top
+                          anchors.margins: 10
                           spacing: 8
 
-                          // Profile Name
-                          Rectangle {
-                            Layout.preferredWidth: 150
-                            Layout.fillHeight: true
-                            color: "transparent"
-
-                            TextInput {
-                              id: profNameInput
-                              anchors.fill: parent
-                              maximumLength: 128
-                              verticalAlignment: TextInput.AlignVCenter
-                              font.family: root.fontFamily
-                              font.pixelSize: 11
-                              color: root.foreground
-                              clip: true
-                              text: modelData ? (modelData.name || "") : ""
-                              onTextChanged: {
-                                if (activeFocus) {
-                                  root.updateProfileField(index, "name", text)
-                                }
-                              }
-                            }
-
-                            Text {
-  textFormat: Text.PlainText
-                              anchors.verticalCenter: parent.verticalCenter
-                              text: "profile name"
-                              font.family: root.fontFamily
-                              font.pixelSize: 11
-                              color: root.subtleText
-                              visible: !profNameInput.text || profNameInput.text.length === 0
-                            }
-                          }
-
-                          Rectangle {
-                            Layout.fillHeight: true
-                            width: 1
-                            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                          }
-
-                          // Profile API Key
-                          Item {
+                          // Profile Header: Title and Delete Button
+                          RowLayout {
                             Layout.fillWidth: true
-                            Layout.fillHeight: true
+                            spacing: 6
 
-                            TextInput {
-                              id: profKeyInput
-                              anchors.fill: parent
-                              maximumLength: 512
-                              verticalAlignment: TextInput.AlignVCenter
+                            Text {
+                              textFormat: Text.PlainText
+                              text: modelData && modelData.name ? modelData.name : "Custom Profile"
                               font.family: root.fontFamily
                               font.pixelSize: 11
+                              font.weight: Font.DemiBold
                               color: root.foreground
-                              clip: true
-                              echoMode: profRowItem.maskProfKey ? TextInput.Password : TextInput.Normal
-                              text: modelData ? (modelData.apiKey || "") : ""
-                              onTextChanged: {
-                                if (activeFocus) {
-                                  root.updateProfileField(index, "apiKey", text)
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Rectangle {
+                              width: 22
+                              height: 22
+                              radius: 4
+                              color: profDelHover.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent"
+
+                              MouseArea {
+                                id: profDelHover
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.deleteProfileFromCurrentEndpoint(index)
+                              }
+
+                              Text {
+                                textFormat: Text.PlainText
+                                anchors.centerIn: parent
+                                text: "\uF1F8" // Trash
+                                font.family: root.fontFamily
+                                font.pixelSize: 10
+                                color: profDelHover.containsMouse ? "#EF4444" : root.dimText
+                              }
+                            }
+                          }
+
+                          // Fields Row 1: Profile Name and Context Window (tokens)
+                          RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            // Profile Name Field
+                            ColumnLayout {
+                              Layout.fillWidth: true
+                              spacing: 4
+
+                              Text {
+                                textFormat: Text.PlainText
+                                text: "Profile Name"
+                                font.family: root.fontFamily
+                                font.pixelSize: 10
+                                font.weight: Font.Medium
+                                color: root.dimText
+                              }
+
+                              Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 30
+                                height: 30
+                                radius: 6
+                                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                                border.color: profNameInput.activeFocus
+                                  ? root.accent
+                                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                                TextInput {
+                                  id: profNameInput
+                                  anchors.fill: parent
+                                  anchors.leftMargin: 8
+                                  anchors.rightMargin: 8
+                                  maximumLength: 128
+                                  verticalAlignment: TextInput.AlignVCenter
+                                  font.family: root.fontFamily
+                                  font.pixelSize: 11
+                                  color: root.foreground
+                                  clip: true
+                                  text: modelData ? (modelData.name || "") : ""
+                                  onTextChanged: {
+                                    if (activeFocus) {
+                                      root.updateProfileField(index, "name", text)
+                                    }
+                                  }
+                                }
+
+                                Text {
+                                  textFormat: Text.PlainText
+                                  anchors.verticalCenter: parent.verticalCenter
+                                  anchors.left: parent.left
+                                  anchors.leftMargin: 8
+                                  text: "e.g. coder"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: 10
+                                  color: root.subtleText
+                                  visible: !profNameInput.text || profNameInput.text.length === 0
                                 }
                               }
                             }
 
-                            Text {
-  textFormat: Text.PlainText
-                              anchors.verticalCenter: parent.verticalCenter
-                              text: "Inherited from Endpoint"
-                              font.family: root.fontFamily
-                              font.pixelSize: 10
-                              color: root.subtleText
-                              visible: !profKeyInput.text || profKeyInput.text.length === 0
+                            // Profile Context Window Field
+                            ColumnLayout {
+                              Layout.preferredWidth: 160
+                              spacing: 4
+
+                              Text {
+                                textFormat: Text.PlainText
+                                text: "Context Window (tokens)"
+                                font.family: root.fontFamily
+                                font.pixelSize: 10
+                                font.weight: Font.Medium
+                                color: root.dimText
+                              }
+
+                              Rectangle {
+                                Layout.fillWidth: true
+                                implicitHeight: 30
+                                height: 30
+                                radius: 6
+                                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                                border.color: profContextInput.activeFocus
+                                  ? root.accent
+                                  : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                                TextInput {
+                                  id: profContextInput
+                                  anchors.fill: parent
+                                  anchors.leftMargin: 8
+                                  anchors.rightMargin: 8
+                                  maximumLength: 8
+                                  verticalAlignment: TextInput.AlignVCenter
+                                  font.family: root.fontFamily
+                                  font.pixelSize: 11
+                                  color: root.foreground
+                                  clip: true
+                                  text: modelData && modelData.contextWindow ? String(modelData.contextWindow) : ""
+                                  onTextChanged: {
+                                    if (activeFocus) {
+                                      root.updateProfileField(index, "contextWindow", text)
+                                    }
+                                  }
+                                }
+
+                                Text {
+                                  textFormat: Text.PlainText
+                                  anchors.verticalCenter: parent.verticalCenter
+                                  anchors.left: parent.left
+                                  anchors.leftMargin: 8
+                                  text: "e.g. 96000 (optional)"
+                                  font.family: root.fontFamily
+                                  font.pixelSize: 10
+                                  color: root.subtleText
+                                  visible: !profContextInput.text || profContextInput.text.length === 0
+                                }
+                              }
                             }
                           }
 
-                          // Toggle eye
-                          Rectangle {
-                            width: 20
-                            height: 20
-                            radius: 4
-                            color: profEyeHover.containsMouse ? root.cardHover : "transparent"
-
-                            MouseArea {
-                              id: profEyeHover
-                              anchors.fill: parent
-                              hoverEnabled: true
-                              cursorShape: Qt.PointingHandCursor
-                              onClicked: profRowItem.maskProfKey = !profRowItem.maskProfKey
-                            }
+                          // Fields Row 2: Profile API Key
+                          ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 4
 
                             Text {
-  textFormat: Text.PlainText
-                              anchors.centerIn: parent
-                              text: profRowItem.maskProfKey ? "\uF070" : "\uF06E"
+                              textFormat: Text.PlainText
+                              text: "API Key (optional override)"
                               font.family: root.fontFamily
                               font.pixelSize: 10
-                              color: profEyeHover.containsMouse ? root.foreground : root.dimText
-                            }
-                          }
-
-                          // Delete button
-                          Rectangle {
-                            width: 22
-                            height: 22
-                            radius: 4
-                            color: profDelHover.containsMouse ? Qt.rgba(239/255, 68/255, 68/255, 0.2) : "transparent"
-
-                            MouseArea {
-                              id: profDelHover
-                              anchors.fill: parent
-                              hoverEnabled: true
-                              cursorShape: Qt.PointingHandCursor
-                              onClicked: root.deleteProfileFromCurrentEndpoint(index)
+                              font.weight: Font.Medium
+                              color: root.dimText
                             }
 
-                            Text {
-  textFormat: Text.PlainText
-                              anchors.centerIn: parent
-                              text: "\uF1F8" // Trash
-                              font.family: root.fontFamily
-                              font.pixelSize: 10
-                              color: profDelHover.containsMouse ? "#EF4444" : root.dimText
+                            Rectangle {
+                              Layout.fillWidth: true
+                              implicitHeight: 30
+                              height: 30
+                              radius: 6
+                              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.04)
+                              border.color: profKeyInput.activeFocus
+                                ? root.accent
+                                : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+                              RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 8
+                                anchors.rightMargin: 6
+                                spacing: 6
+
+                                Item {
+                                  Layout.fillWidth: true
+                                  Layout.fillHeight: true
+
+                                  TextInput {
+                                    id: profKeyInput
+                                    anchors.fill: parent
+                                    maximumLength: 512
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    font.family: root.fontFamily
+                                    font.pixelSize: 11
+                                    color: root.foreground
+                                    clip: true
+                                    echoMode: profCardItem.maskProfKey ? TextInput.Password : TextInput.Normal
+                                    text: modelData ? (modelData.apiKey || "") : ""
+                                    onTextChanged: {
+                                      if (activeFocus) {
+                                        root.updateProfileField(index, "apiKey", text)
+                                      }
+                                    }
+                                  }
+
+                                  Text {
+                                    textFormat: Text.PlainText
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    text: "Inherited from Endpoint"
+                                    font.family: root.fontFamily
+                                    font.pixelSize: 10
+                                    color: root.subtleText
+                                    visible: !profKeyInput.text || profKeyInput.text.length === 0
+                                  }
+                                }
+
+                                Rectangle {
+                                  width: 20
+                                  height: 20
+                                  radius: 4
+                                  color: profEyeHover.containsMouse ? root.cardHover : "transparent"
+
+                                  MouseArea {
+                                    id: profEyeHover
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: profCardItem.maskProfKey = !profCardItem.maskProfKey
+                                  }
+
+                                  Text {
+                                    textFormat: Text.PlainText
+                                    anchors.centerIn: parent
+                                    text: profCardItem.maskProfKey ? "\uF070" : "\uF06E"
+                                    font.family: root.fontFamily
+                                    font.pixelSize: 10
+                                    color: profEyeHover.containsMouse ? root.foreground : root.dimText
+                                  }
+                                }
+                              }
                             }
                           }
                         }
@@ -5193,7 +5541,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       visible: !settingsFormCol.curEp || !settingsFormCol.curEp.profiles || settingsFormCol.curEp.profiles.length === 0
                       text: "No custom agent profiles configured. Click '+ Add Profile' to add one."
                       font.family: root.fontFamily
@@ -5240,7 +5588,7 @@ Panel {
                     spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "\uF00D" // Cross
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5248,7 +5596,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: root.settingsErrorMessage
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5275,7 +5623,7 @@ Panel {
                     spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "\uF00C" // Check
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5283,7 +5631,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: root.settingsSuccessMessage
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5319,7 +5667,7 @@ Panel {
                   }
 
                   Text {
-  textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     id: cancelTxt
                     anchors.centerIn: parent
                     text: "Back"
@@ -5350,7 +5698,7 @@ Panel {
                     spacing: 6
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "\uF00C" // Check
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5358,7 +5706,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Save Settings"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -5461,7 +5809,7 @@ Panel {
                     Layout.alignment: Qt.AlignVCenter
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: "\u{f06d3}" // Feather
                       font.family: root.fontFamily
@@ -5476,7 +5824,7 @@ Panel {
                     spacing: 1
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Hermes (All Agents)"
                       font.family: root.fontFamily
                       font.pixelSize: 11
@@ -5487,7 +5835,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "Unified view • All endpoints & profiles"
                       font.family: root.fontFamily
                       font.pixelSize: 9
@@ -5498,7 +5846,7 @@ Panel {
                   }
 
                   Text {
-  textFormat: Text.PlainText
+                    textFormat: Text.PlainText
                     visible: root.activeTarget.endpointId === "all"
                     text: "\uF00C" // Checkmark
                     font.family: root.fontFamily
@@ -5547,7 +5895,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: epGroupCol.modelData.name || "Endpoint"
                       font.family: root.fontFamily
                       font.pixelSize: 10
@@ -5605,7 +5953,7 @@ Panel {
                           Layout.alignment: Qt.AlignVCenter
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             anchors.centerIn: parent
                             anchors.verticalCenterOffset: 1
                             text: profCard.modelData.monogram || "H"
@@ -5622,7 +5970,7 @@ Panel {
                           spacing: 1
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             text: profCard.modelData.isDefault ? "Default" : profCard.modelData.name
                             font.family: root.fontFamily
                             font.pixelSize: 11
@@ -5633,7 +5981,7 @@ Panel {
                           }
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             text: profCard.modelData.isDefault ? "Default agent profile" : "Multiplexed profile"
                             font.family: root.fontFamily
                             font.pixelSize: 9
@@ -5644,7 +5992,7 @@ Panel {
                         }
 
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           visible: profCard.isActive
                           text: "\uF00C" // Checkmark
                           font.family: root.fontFamily
@@ -5722,7 +6070,7 @@ Panel {
                 spacing: 6
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: "Start New Session With"
                   font.family: root.fontFamily
                   font.pixelSize: 11
@@ -5733,7 +6081,7 @@ Panel {
                 Item { Layout.fillWidth: true }
 
                 Text {
-  textFormat: Text.PlainText
+                  textFormat: Text.PlainText
                   text: root.allAgentTargets.length + (root.allAgentTargets.length === 1 ? " profile" : " profiles")
                   font.family: root.fontFamily
                   font.pixelSize: 9
@@ -5795,7 +6143,7 @@ Panel {
                       Layout.alignment: Qt.AlignVCenter
 
                       Text {
-  textFormat: Text.PlainText
+                        textFormat: Text.PlainText
                         anchors.centerIn: parent
                         anchors.verticalCenterOffset: 1
                         text: agentTargetCard.modelData.monogram || "H"
@@ -5815,7 +6163,7 @@ Panel {
                         Layout.fillWidth: true
                         spacing: 6
                         Text {
-  textFormat: Text.PlainText
+                          textFormat: Text.PlainText
                           text: agentTargetCard.modelData.displayName
                           font.family: root.fontFamily
                           font.pixelSize: 11
@@ -5833,7 +6181,7 @@ Panel {
                           implicitWidth: defaultTag.implicitWidth + 8
 
                           Text {
-  textFormat: Text.PlainText
+                            textFormat: Text.PlainText
                             id: defaultTag
                             anchors.centerIn: parent
                             text: "Default"
@@ -5870,7 +6218,7 @@ Panel {
                     }
 
                     Text {
-  textFormat: Text.PlainText
+                      textFormat: Text.PlainText
                       text: "\uF061" // Right arrow
                       font.family: root.fontFamily
                       font.pixelSize: 10
