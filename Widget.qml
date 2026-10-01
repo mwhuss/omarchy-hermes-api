@@ -48,6 +48,8 @@ Panel {
   property bool isTargetDropdownOpen: false
   property bool isAgentPickerOpen: false
   property bool appWindowOpen: false
+  property int appWindowWidth: 800
+  property int appWindowHeight: 650
   property var promptInput: null
   property var chatFlick: null
   property var sessionListView: null
@@ -177,6 +179,14 @@ Panel {
 
   function closeAppWindow() {
     if (root.promptInput) root.promptDraft = root.promptInput.text
+    if (appWindow) {
+      if (appWindow.width >= 560) root.appWindowWidth = Math.round(appWindow.width)
+      if (appWindow.height >= 480) root.appWindowHeight = Math.round(appWindow.height)
+    }
+    if (saveAppWindowGeometryTimer.running) {
+      saveAppWindowGeometryTimer.stop()
+    }
+    root.saveAppWindowGeometry(root.appWindowWidth, root.appWindowHeight)
     root.appWindowOpen = false
   }
 
@@ -571,8 +581,7 @@ Panel {
   onOpenedChanged: {
     if (opened) {
       if (root.appWindowOpen) {
-        if (root.promptInput) root.promptDraft = root.promptInput.text
-        root.appWindowOpen = false
+        root.closeAppWindow()
       }
       root.isConfirmingDeleteSession = false
       root.isConfirmingDeleteEndpoint = false
@@ -1751,6 +1760,28 @@ Panel {
     setHideCronProc.running = true
   }
 
+  Timer {
+    id: saveAppWindowGeometryTimer
+    interval: 350
+    repeat: false
+    onTriggered: {
+      root.saveAppWindowGeometry(root.appWindowWidth, root.appWindowHeight)
+    }
+  }
+
+  function saveAppWindowGeometry(w, h) {
+    if (setAppWindowGeometryProc.running) {
+      saveAppWindowGeometryTimer.restart()
+      return
+    }
+    var safeW = Math.max(560, Math.round(w))
+    var safeH = Math.max(480, Math.round(h))
+    setAppWindowGeometryProc.buf = ""
+    setAppWindowGeometryProc.errBuf = ""
+    setAppWindowGeometryProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-app-window-geometry", String(safeW), String(safeH)]
+    setAppWindowGeometryProc.running = true
+  }
+
   function cloneSettings(obj) {
     return JSON.parse(JSON.stringify(obj))
   }
@@ -1766,6 +1797,10 @@ Panel {
           root.selectedEndpointIndex = Math.max(0, eps.length - 1)
         }
         root.hideCronSessions = (data.settings.hideCronSessions === true)
+        if (data.settings.appWindow) {
+          root.appWindowWidth = data.settings.appWindow.width || 800
+          root.appWindowHeight = data.settings.appWindow.height || 650
+        }
       }
     } catch (e) {
       console.warn("hermes-bridge/get-settings parse error:", e)
@@ -2247,6 +2282,44 @@ Panel {
   }
 
   Process {
+    id: setAppWindowGeometryProc
+    property string buf: ""
+    property string errBuf: ""
+    running: false
+    command: ["/usr/bin/node", "--", root.scriptPath, "set-app-window-geometry", "800", "650"]
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (setAppWindowGeometryProc.buf.length < 8192) {
+          setAppWindowGeometryProc.buf += chunk
+        }
+      }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (setAppWindowGeometryProc.errBuf.length < 8192) {
+          setAppWindowGeometryProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      if (setAppWindowGeometryProc.buf) {
+        try {
+          var data = JSON.parse(setAppWindowGeometryProc.buf)
+          if (data && data.success === false) {
+            console.warn("hermes-bridge/set-app-window-geometry error:", data.error)
+          }
+        } catch (e) {
+          console.warn("hermes-bridge/set-app-window-geometry parse error")
+        }
+      }
+      setAppWindowGeometryProc.buf = ""
+      setAppWindowGeometryProc.errBuf = ""
+    }
+  }
+
+  Process {
     id: listTargetsProc
     property string buf: ""
     property string errBuf: ""
@@ -2393,6 +2466,7 @@ Panel {
     if (getSettingsProc.running) getSettingsProc.signal(15)
     if (saveSettingsProc.running) saveSettingsProc.signal(15)
     if (setHideCronProc.running) setHideCronProc.signal(15)
+    if (setAppWindowGeometryProc.running) setAppWindowGeometryProc.signal(15)
     if (listTargetsProc.running) listTargetsProc.signal(15)
     if (setActiveTargetProc.running) setActiveTargetProc.signal(15)
     if (root.activeStreams) {
@@ -4407,8 +4481,8 @@ Panel {
                       width: parent ? parent.width : undefined
                       leftPadding: 10
                       rightPadding: 10
-                      topPadding: 8
-                      bottomPadding: 8
+                      topPadding: 10
+                      bottomPadding: 10
                       wrapMode: TextArea.Wrap
                       verticalAlignment: TextArea.AlignTop
                       font.family: root.fontFamily
@@ -6320,13 +6394,40 @@ Panel {
     id: appWindow
     visible: root.appWindowOpen
     title: root.serverName + " Agent"
-    implicitWidth: 800
-    implicitHeight: 650
+    implicitWidth: root.appWindowWidth
+    implicitHeight: root.appWindowHeight
+    width: root.appWindowWidth
+    height: root.appWindowHeight
     minimumSize: Qt.size(560, 480)
     color: root.background
 
+    onWidthChanged: {
+      if (root.appWindowOpen && visible && width >= 560 && Math.round(width) !== root.appWindowWidth) {
+        root.appWindowWidth = Math.round(width)
+        saveAppWindowGeometryTimer.restart()
+      }
+    }
+
+    onHeightChanged: {
+      if (root.appWindowOpen && visible && height >= 480 && Math.round(height) !== root.appWindowHeight) {
+        root.appWindowHeight = Math.round(height)
+        saveAppWindowGeometryTimer.restart()
+      }
+    }
+
     onVisibleChanged: {
-      if (!visible && root.appWindowOpen) {
+      if (visible) {
+        var targetW = Math.max(560, root.appWindowWidth)
+        var targetH = Math.max(480, root.appWindowHeight)
+        if (typeof Screen !== "undefined") {
+          if (Screen.width > 0 && targetW > Screen.width) targetW = Math.max(560, Screen.width)
+          if (Screen.height > 0 && targetH > Screen.height) targetH = Math.max(480, Screen.height)
+        }
+        root.appWindowWidth = targetW
+        root.appWindowHeight = targetH
+        if (width !== targetW) width = targetW
+        if (height !== targetH) height = targetH
+      } else if (root.appWindowOpen) {
         root.closeAppWindow()
       }
     }

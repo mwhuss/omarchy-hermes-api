@@ -672,6 +672,82 @@ async function testSettings() {
     assert.strictEqual(seededData.hideCronSessions, true, 'seeded settings must persist hideCronSessions');
     console.log('  ✔ set-hide-cron seeds defaults on a fresh install');
 
+    console.log('Testing: appWindow dimensions default in get-settings...');
+    const getAppWinRes = await runBridge(['get-settings']);
+    const getAppWinJson = JSON.parse(getAppWinRes.stdout);
+    assert.strictEqual(getAppWinJson.success, true, 'get-settings should succeed');
+    assert.deepStrictEqual(getAppWinJson.settings.appWindow, { width: 800, height: 650 }, 'appWindow should default to 800x650');
+    console.log('  ✔ appWindow defaults to 800x650');
+
+    console.log('Testing: set-app-window-geometry command and permissions...');
+    const setGeomRes = await runBridge(['set-app-window-geometry', '1024', '768']);
+    assert.strictEqual(setGeomRes.code, 0, `set-app-window-geometry exit code should be 0, got ${setGeomRes.code}`);
+    const setGeomJson = JSON.parse(setGeomRes.stdout);
+    assert.strictEqual(setGeomJson.success, true, 'set-app-window-geometry should succeed');
+    assert.deepStrictEqual(setGeomJson.appWindow, { width: 1024, height: 768 }, 'set-app-window-geometry should report 1024x768');
+
+    const geomStat = fs.statSync(settingsPath);
+    assert.strictEqual(geomStat.mode & 0o777, 0o600, 'set-app-window-geometry must preserve 0600 file permissions');
+
+    const getGeomRes = await runBridge(['get-settings']);
+    const getGeomJson = JSON.parse(getGeomRes.stdout);
+    assert.deepStrictEqual(getGeomJson.settings.appWindow, { width: 1024, height: 768 }, 'get-settings should reflect updated appWindow');
+    console.log('  ✔ set-app-window-geometry round-trips with 0600 permissions');
+
+    console.log('Testing: set-app-window-geometry clamping and validation...');
+    // Under min bounds (560x480)
+    const clampRes = await runBridge(['set-app-window-geometry', '400', '300']);
+    const clampJson = JSON.parse(clampRes.stdout);
+    assert.strictEqual(clampJson.success, true, 'set-app-window-geometry should succeed with clamping');
+    assert.deepStrictEqual(clampJson.appWindow, { width: 560, height: 480 }, 'dimensions below minimum must be clamped to 560x480');
+
+    // Invalid integers
+    const invalidGeomRes = await runBridge(['set-app-window-geometry', 'abc', 'def']);
+    const invalidGeomJson = JSON.parse(invalidGeomRes.stdout);
+    assert.strictEqual(invalidGeomJson.success, false, 'non-integer dimensions must fail');
+    console.log('  ✔ set-app-window-geometry enforces min 560x480 clamping and rejects invalid input');
+
+    console.log('Testing: save-settings round-trips appWindow...');
+    const saveWinRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 8642 }],
+      appWindow: { width: 960, height: 720 }
+    })]);
+    const saveWinJson = JSON.parse(saveWinRes.stdout);
+    assert.strictEqual(saveWinJson.success, true, 'save-settings with appWindow should succeed');
+    assert.deepStrictEqual(saveWinJson.settings.appWindow, { width: 960, height: 720 }, 'save-settings should echo appWindow');
+    const savedWinData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(savedWinData.appWindow, { width: 960, height: 720 }, 'appWindow must be persisted to disk by save-settings');
+    console.log('  ✔ save-settings round-trips appWindow');
+
+    console.log('Testing: save-settings preserves appWindow when omitted...');
+    const saveOmitWinRes = await runBridge(['save-settings', JSON.stringify({
+      endpoints: [{ name: 'Test', url: 'http://127.0.0.1', port: 8642 }]
+    })]);
+    const saveOmitWinJson = JSON.parse(saveOmitWinRes.stdout);
+    assert.strictEqual(saveOmitWinJson.success, true, 'save-settings without appWindow should succeed');
+    assert.deepStrictEqual(saveOmitWinJson.settings.appWindow, { width: 960, height: 720 }, 'save-settings must preserve existing appWindow when omitted');
+    const savedOmitWinData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(savedOmitWinData.appWindow, { width: 960, height: 720 }, 'appWindow must survive a save-settings that omits it');
+    console.log('  ✔ save-settings preserves appWindow when omitted');
+
+    console.log('Testing: set-app-window-geometry fails closed on an invalid settings file...');
+    fs.writeFileSync(settingsPath, invalidContent, { mode: 0o600 });
+    const badGeomRes = await runBridge(['set-app-window-geometry', '800', '650']);
+    const badGeomJson = JSON.parse(badGeomRes.stdout);
+    assert.strictEqual(badGeomJson.success, false, 'set-app-window-geometry must fail when the settings file is invalid');
+    assert.strictEqual(fs.readFileSync(settingsPath, 'utf8'), invalidContent, 'set-app-window-geometry must not overwrite an invalid settings file');
+    console.log('  ✔ set-app-window-geometry fails closed and leaves the invalid file untouched');
+
+    console.log('Testing: set-app-window-geometry seeds defaults when no settings file exists...');
+    fs.unlinkSync(settingsPath);
+    const seedGeomRes = await runBridge(['set-app-window-geometry', '1100', '850'], null, { HERMES_API_SERVER_KEY: 'seed-test-key' });
+    const seedGeomJson = JSON.parse(seedGeomRes.stdout);
+    assert.strictEqual(seedGeomJson.success, true, 'set-app-window-geometry should succeed on a fresh install by seeding defaults');
+    assert.deepStrictEqual(seedGeomJson.appWindow, { width: 1100, height: 850 }, 'set-app-window-geometry should set specified dimensions');
+    const seededGeomData = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    assert.deepStrictEqual(seededGeomData.appWindow, { width: 1100, height: 850 }, 'seeded settings must persist appWindow');
+    console.log('  ✔ set-app-window-geometry seeds defaults on a fresh install');
+
     // Reset the preference so the finally-restore leaves a clean state
     await runBridge(['set-hide-cron', 'false']);
   } finally {

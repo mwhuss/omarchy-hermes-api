@@ -1558,12 +1558,14 @@ async function handleGetSettings() {
             });
           }
         });
+        const appWindow = sanitizeAppWindow(data.appWindow);
         console.log(JSON.stringify({
           success: true,
           seeded: false,
           settings: {
             activeTarget: data.activeTarget || { endpointId: 'all', profileName: 'all' },
             hideCronSessions: data.hideCronSessions === true,
+            appWindow,
             endpoints: data.endpoints
           }
         }));
@@ -1581,6 +1583,16 @@ async function handleGetSettings() {
   }));
 }
 
+function sanitizeAppWindow(raw) {
+  if (raw && typeof raw === 'object') {
+    return {
+      width: Math.max(560, parseInt(raw.width, 10) || 800),
+      height: Math.max(480, parseInt(raw.height, 10) || 650)
+    };
+  }
+  return { width: 800, height: 650 };
+}
+
 function buildSeededSettings() {
   // Seed default settings from active environment / ~/.hermes/.env
   const hermesEnv = loadHermesEnvFile();
@@ -1592,6 +1604,7 @@ function buildSeededSettings() {
   return {
     activeTarget: { endpointId: 'all', profileName: 'all' },
     hideCronSessions: false,
+    appWindow: { width: 800, height: 650 },
     endpoints: [
       {
         id: 'endpoint-default',
@@ -1796,17 +1809,21 @@ async function handleSaveSettings(rawInput) {
     }
   }
 
-  // Preserve the hideCronSessions preference when the payload omits it
+  // Preserve the hideCronSessions and appWindow preferences when the payload omits them
   // (the endpoint Save button only sends { endpoints })
-  let hideCronSessions = data.hideCronSessions === true;
-  if (data.hideCronSessions === undefined) {
-    const existing = loadSettingsFile();
-    hideCronSessions = !!(existing && existing.hideCronSessions === true);
-  }
+  const existing = (data.hideCronSessions === undefined || data.appWindow === undefined) ? loadSettingsFile() : null;
+  const hideCronSessions = data.hideCronSessions !== undefined
+    ? data.hideCronSessions === true
+    : !!(existing && existing.hideCronSessions === true);
+
+  const cleanAppWindow = data.appWindow !== undefined
+    ? sanitizeAppWindow(data.appWindow)
+    : sanitizeAppWindow(existing && existing.appWindow);
 
   const cleanSettings = {
     activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
     hideCronSessions,
+    appWindow: cleanAppWindow,
     endpoints: validatedEndpoints
   };
 
@@ -1825,40 +1842,55 @@ async function handleSaveSettings(rawInput) {
   }
 }
 
-async function handleSetHideCron(value) {
-  const hide = value === 'true';
+async function mutateSetting(key, val, errMessage) {
   const settingsPath = getSettingsPath();
   let settings;
   if (fs.existsSync(settingsPath)) {
     settings = loadSettingsFile();
     if (!settings) {
-      // Fail closed: the file exists but is unreadable or invalid.
-      // Never overwrite it with a fresh object — that would wipe the
-      // user's endpoints (or a file they are mid-repair on).
       console.log(JSON.stringify({
         success: false,
-        error: 'Settings file is invalid; fix or remove it before changing this preference'
+        error: errMessage
       }));
       return;
     }
   } else {
-    // No settings file yet: seed the same defaults get-settings would
-    // return, so the first toggle doesn't require a manual save first.
     settings = buildSeededSettings();
   }
-  settings.hideCronSessions = hide;
+  settings[key] = val;
   try {
     writeAtomicSettings(settings);
     console.log(JSON.stringify({
       success: true,
-      hideCronSessions: hide
+      [key]: val
     }));
   } catch (err) {
     console.log(JSON.stringify({
       success: false,
-      error: `Failed to save hideCronSessions: ${err.message}`
+      error: `Failed to save ${key}: ${err.message}`
     }));
   }
+}
+
+async function handleSetAppWindowGeometry(widthStr, heightStr) {
+  const width = parseInt(widthStr, 10);
+  const height = parseInt(heightStr, 10);
+  if (isNaN(width) || isNaN(height)) {
+    console.log(JSON.stringify({
+      success: false,
+      error: 'Width and height must be valid integers'
+    }));
+    return;
+  }
+
+  await mutateSetting('appWindow', {
+    width: Math.max(560, width),
+    height: Math.max(480, height)
+  }, 'Settings file is invalid; fix or remove it before changing window geometry');
+}
+
+async function handleSetHideCron(value) {
+  await mutateSetting('hideCronSessions', value === 'true', 'Settings file is invalid; fix or remove it before changing this preference');
 }
 
 function parseCliOptions(args) {
@@ -1922,6 +1954,10 @@ async function main() {
       await handleSetHideCron(rest[1]);
       break;
 
+    case 'set-app-window-geometry':
+      await handleSetAppWindowGeometry(rest[1], rest[2]);
+      break;
+
     case 'stream-chat': {
       let sessionId = null;
       let prompt = '';
@@ -1974,7 +2010,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron, set-app-window-geometry`
       }));
       process.exit(1);
   }
