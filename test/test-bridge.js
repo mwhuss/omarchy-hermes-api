@@ -1706,6 +1706,90 @@ function testFastPollAndMessageComparison() {
   console.log('  ✔ fastPollTimer optimization and message comparison fast-path verified');
 }
 
+function testCloseSettingsOnSave() {
+  console.log('Testing: close settings menu on save settings success (Issue #76)...');
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  const content = fs.readFileSync(widgetPath, 'utf8');
+
+  // Verify braces are balanced
+  assert.strictEqual(
+    content.split('{').length,
+    content.split('}').length,
+    'Widget.qml must have balanced braces'
+  );
+
+  // Extract parseSaveSettingsResult function
+  const parseMatch = content.match(/function parseSaveSettingsResult\([^)]*\)\s*\{[\s\S]*?\n  \}/);
+  assert.ok(parseMatch, 'Widget.qml must define parseSaveSettingsResult');
+  const parseBody = parseMatch[0];
+
+  // Verify root.isSettingsOpen = false is inside the data.success branch
+  assert.ok(
+    parseBody.includes('root.isSettingsOpen = false'),
+    'parseSaveSettingsResult must set root.isSettingsOpen = false upon successful save'
+  );
+
+  // Test the function behavior directly
+  const dummyRoot = {
+    settingsErrorMessage: 'prior error',
+    settingsSuccessMessage: '',
+    isSettingsOpen: true,
+    settingsEndpoints: [],
+    serverName: 'Prior',
+    hideCronSessions: false,
+    refreshed: false,
+    promptInput: { focused: false, forceActiveFocus() { this.focused = true; } },
+    triggerRefresh() { this.refreshed = true; }
+  };
+  const dummyTimer = { restarted: false, restart() { this.restarted = true; } };
+
+  const fn = new Function('root', 'cloneSettings', 'settingsSuccessTimer', 'Qt', `
+    ${parseBody}
+    return parseSaveSettingsResult;
+  `)(
+    dummyRoot,
+    (eps) => JSON.parse(JSON.stringify(eps)),
+    dummyTimer,
+    { callLater(cb) { cb(); } }
+  );
+
+  // 1. Success case: closes settings, focuses prompt input, and updates success state
+  fn(JSON.stringify({
+    success: true,
+    settings: {
+      endpoints: [{ name: 'Test Server', url: 'http://127.0.0.1', port: 8642 }],
+      hideCronSessions: true
+    }
+  }));
+
+  assert.strictEqual(dummyRoot.isSettingsOpen, false, 'isSettingsOpen must be false after successful save');
+  assert.strictEqual(dummyRoot.settingsSuccessMessage, 'Settings saved successfully');
+  assert.strictEqual(dummyRoot.settingsErrorMessage, '');
+  assert.strictEqual(dummyRoot.serverName, 'Test Server');
+  assert.strictEqual(dummyRoot.hideCronSessions, true);
+  assert.strictEqual(dummyRoot.refreshed, true);
+  assert.strictEqual(dummyRoot.promptInput.focused, true);
+  assert.strictEqual(dummyTimer.restarted, true);
+
+  // 2. Error case: remains open and sets error message
+  dummyRoot.isSettingsOpen = true;
+  fn(JSON.stringify({
+    success: false,
+    error: 'Validation failed on endpoint URL'
+  }));
+
+  assert.strictEqual(dummyRoot.isSettingsOpen, true, 'isSettingsOpen must remain true if save fails');
+  assert.strictEqual(dummyRoot.settingsErrorMessage, 'Validation failed on endpoint URL');
+
+  // 3. Corrupt/invalid JSON case: remains open
+  dummyRoot.isSettingsOpen = true;
+  fn('not valid json');
+  assert.strictEqual(dummyRoot.isSettingsOpen, true, 'isSettingsOpen must remain true if JSON parse fails');
+  assert.ok(dummyRoot.settingsErrorMessage.startsWith('Error parsing save response'));
+
+  console.log('  ✔ close settings menu on save settings success verified');
+}
+
 function testUrlGuard() {
   console.log('Testing: url-guard allowlist...');
   const guardPath = path.join(__dirname, '..', 'bin', 'url-guard.js');
@@ -2111,6 +2195,7 @@ async function runAllTests() {
     testUrlGuard();
     testSanitizeMarkdown();
     testFastPollAndMessageComparison();
+    testCloseSettingsOnSave();
     await testSettings();
     await testMonograms();
     await testListTargetsAndActiveTarget();

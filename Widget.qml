@@ -1786,8 +1786,15 @@ Panel {
             var activeEp = root.settingsEndpoints[0]
             root.serverName = activeEp.name || "Hermes"
           }
+          if (data.settings.hideCronSessions !== undefined) {
+            root.hideCronSessions = (data.settings.hideCronSessions === true)
+          }
         }
+        root.isSettingsOpen = false
         root.triggerRefresh()
+        Qt.callLater(function() {
+          if (!root.isSettingsOpen && root.promptInput) root.promptInput.forceActiveFocus()
+        })
       } else {
         root.settingsErrorMessage = (data && data.error) ? data.error : "Failed to save settings"
       }
