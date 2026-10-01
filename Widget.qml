@@ -164,18 +164,6 @@ Panel {
 
   function openAppWindow() {
     if (root.promptInput) root.promptDraft = root.promptInput.text
-    var targetW = Math.max(560, root.appWindowWidth)
-    var targetH = Math.max(480, root.appWindowHeight)
-    if (typeof Screen !== "undefined") {
-      if (Screen.width > 0 && targetW > Screen.width) targetW = Math.max(560, Screen.width)
-      if (Screen.height > 0 && targetH > Screen.height) targetH = Math.max(480, Screen.height)
-    }
-    root.appWindowWidth = targetW
-    root.appWindowHeight = targetH
-    if (appWindow) {
-      appWindow.width = targetW
-      appWindow.height = targetH
-    }
     root.appWindowOpen = true
     root.close()
     root.isConfirmingDeleteSession = false
@@ -1809,11 +1797,9 @@ Panel {
           root.selectedEndpointIndex = Math.max(0, eps.length - 1)
         }
         root.hideCronSessions = (data.settings.hideCronSessions === true)
-        if (data.settings.appWindow && typeof data.settings.appWindow === "object") {
-          var w = parseInt(data.settings.appWindow.width, 10)
-          var h = parseInt(data.settings.appWindow.height, 10)
-          if (!isNaN(w) && w >= 560) root.appWindowWidth = w
-          if (!isNaN(h) && h >= 480) root.appWindowHeight = h
+        if (data.settings.appWindow) {
+          root.appWindowWidth = data.settings.appWindow.width || 800
+          root.appWindowHeight = data.settings.appWindow.height || 650
         }
       }
     } catch (e) {
@@ -4495,8 +4481,8 @@ Panel {
                       width: parent ? parent.width : undefined
                       leftPadding: 10
                       rightPadding: 10
-                      topPadding: 8
-                      bottomPadding: 8
+                      topPadding: 10
+                      bottomPadding: 10
                       wrapMode: TextArea.Wrap
                       verticalAlignment: TextArea.AlignTop
                       font.family: root.fontFamily
@@ -6437,6 +6423,8 @@ Panel {
           if (Screen.width > 0 && targetW > Screen.width) targetW = Math.max(560, Screen.width)
           if (Screen.height > 0 && targetH > Screen.height) targetH = Math.max(480, Screen.height)
         }
+        root.appWindowWidth = targetW
+        root.appWindowHeight = targetH
         if (width !== targetW) width = targetW
         if (height !== targetH) height = targetH
       } else if (root.appWindowOpen) {

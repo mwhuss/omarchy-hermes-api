@@ -1558,10 +1558,7 @@ async function handleGetSettings() {
             });
           }
         });
-        const appWindow = (data.appWindow && typeof data.appWindow === 'object') ? {
-          width: Math.max(560, parseInt(data.appWindow.width, 10) || 800),
-          height: Math.max(480, parseInt(data.appWindow.height, 10) || 650)
-        } : { width: 800, height: 650 };
+        const appWindow = sanitizeAppWindow(data.appWindow);
         console.log(JSON.stringify({
           success: true,
           seeded: false,
@@ -1584,6 +1581,16 @@ async function handleGetSettings() {
     seeded: true,
     settings: buildSeededSettings()
   }));
+}
+
+function sanitizeAppWindow(raw) {
+  if (raw && typeof raw === 'object') {
+    return {
+      width: Math.max(560, parseInt(raw.width, 10) || 800),
+      height: Math.max(480, parseInt(raw.height, 10) || 650)
+    };
+  }
+  return { width: 800, height: 650 };
 }
 
 function buildSeededSettings() {
@@ -1802,27 +1809,16 @@ async function handleSaveSettings(rawInput) {
     }
   }
 
-  // Preserve the hideCronSessions preference when the payload omits it
-  // Preserve the hideCronSessions preference when the payload omits it
+  // Preserve the hideCronSessions and appWindow preferences when the payload omits them
   // (the endpoint Save button only sends { endpoints })
-  let hideCronSessions = data.hideCronSessions === true;
-  if (data.hideCronSessions === undefined) {
-    const existing = loadSettingsFile();
-    hideCronSessions = !!(existing && existing.hideCronSessions === true);
-  }
+  const existing = (data.hideCronSessions === undefined || data.appWindow === undefined) ? loadSettingsFile() : null;
+  const hideCronSessions = data.hideCronSessions !== undefined
+    ? data.hideCronSessions === true
+    : !!(existing && existing.hideCronSessions === true);
 
-  // Preserve appWindow dimensions when omitted
-  let appWindow = data.appWindow;
-  if (appWindow === undefined) {
-    const existing = loadSettingsFile();
-    if (existing && existing.appWindow) {
-      appWindow = existing.appWindow;
-    }
-  }
-  const cleanAppWindow = (appWindow && typeof appWindow === 'object') ? {
-    width: Math.max(560, parseInt(appWindow.width, 10) || 800),
-    height: Math.max(480, parseInt(appWindow.height, 10) || 650)
-  } : { width: 800, height: 650 };
+  const cleanAppWindow = data.appWindow !== undefined
+    ? sanitizeAppWindow(data.appWindow)
+    : sanitizeAppWindow(existing && existing.appWindow);
 
   const cleanSettings = {
     activeTarget: activeTarget || { endpointId: 'all', profileName: 'all' },
@@ -1846,6 +1842,36 @@ async function handleSaveSettings(rawInput) {
   }
 }
 
+async function mutateSetting(key, val, errMessage) {
+  const settingsPath = getSettingsPath();
+  let settings;
+  if (fs.existsSync(settingsPath)) {
+    settings = loadSettingsFile();
+    if (!settings) {
+      console.log(JSON.stringify({
+        success: false,
+        error: errMessage
+      }));
+      return;
+    }
+  } else {
+    settings = buildSeededSettings();
+  }
+  settings[key] = val;
+  try {
+    writeAtomicSettings(settings);
+    console.log(JSON.stringify({
+      success: true,
+      [key]: val
+    }));
+  } catch (err) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `Failed to save ${key}: ${err.message}`
+    }));
+  }
+}
+
 async function handleSetAppWindowGeometry(widthStr, heightStr) {
   const width = parseInt(widthStr, 10);
   const height = parseInt(heightStr, 10);
@@ -1857,77 +1883,14 @@ async function handleSetAppWindowGeometry(widthStr, heightStr) {
     return;
   }
 
-  const clampedWidth = Math.max(560, width);
-  const clampedHeight = Math.max(480, height);
-
-  const settingsPath = getSettingsPath();
-  let settings;
-  if (fs.existsSync(settingsPath)) {
-    settings = loadSettingsFile();
-    if (!settings) {
-      console.log(JSON.stringify({
-        success: false,
-        error: 'Settings file is invalid; fix or remove it before changing window geometry'
-      }));
-      return;
-    }
-  } else {
-    settings = buildSeededSettings();
-  }
-
-  settings.appWindow = {
-    width: clampedWidth,
-    height: clampedHeight
-  };
-
-  try {
-    writeAtomicSettings(settings);
-    console.log(JSON.stringify({
-      success: true,
-      appWindow: settings.appWindow
-    }));
-  } catch (err) {
-    console.log(JSON.stringify({
-      success: false,
-      error: `Failed to save appWindow geometry: ${err.message}`
-    }));
-  }
+  await mutateSetting('appWindow', {
+    width: Math.max(560, width),
+    height: Math.max(480, height)
+  }, 'Settings file is invalid; fix or remove it before changing window geometry');
 }
 
 async function handleSetHideCron(value) {
-  const hide = value === 'true';
-  const settingsPath = getSettingsPath();
-  let settings;
-  if (fs.existsSync(settingsPath)) {
-    settings = loadSettingsFile();
-    if (!settings) {
-      // Fail closed: the file exists but is unreadable or invalid.
-      // Never overwrite it with a fresh object — that would wipe the
-      // user's endpoints (or a file they are mid-repair on).
-      console.log(JSON.stringify({
-        success: false,
-        error: 'Settings file is invalid; fix or remove it before changing this preference'
-      }));
-      return;
-    }
-  } else {
-    // No settings file yet: seed the same defaults get-settings would
-    // return, so the first toggle doesn't require a manual save first.
-    settings = buildSeededSettings();
-  }
-  settings.hideCronSessions = hide;
-  try {
-    writeAtomicSettings(settings);
-    console.log(JSON.stringify({
-      success: true,
-      hideCronSessions: hide
-    }));
-  } catch (err) {
-    console.log(JSON.stringify({
-      success: false,
-      error: `Failed to save hideCronSessions: ${err.message}`
-    }));
-  }
+  await mutateSetting('hideCronSessions', value === 'true', 'Settings file is invalid; fix or remove it before changing this preference');
 }
 
 function parseCliOptions(args) {
