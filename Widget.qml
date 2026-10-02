@@ -27,7 +27,6 @@ Panel {
   property bool isConfirmingDeleteSession: false
   property bool showSystemPromptInput: false
   property string sessionSystemPrompt: ""
-  property string serverUrl: ""
   property string statusError: ""
   property string serverName: (typeof Quickshell !== "undefined" && typeof Quickshell.env === "function" && Quickshell.env("HERMES_API_SERVER_NAME")) || "Hermes"
 
@@ -162,10 +161,7 @@ Panel {
     return false
   }
 
-  function openAppWindow() {
-    if (root.promptInput) root.promptDraft = root.promptInput.text
-    root.appWindowOpen = true
-    root.close()
+  function resetTransientUi() {
     root.isConfirmingDeleteSession = false
     root.isConfirmingDeleteEndpoint = false
     root.isTargetDropdownOpen = false
@@ -175,6 +171,30 @@ Panel {
     triggerRefresh()
     root.loadSettings()
     Qt.callLater(function() { if (!root.isSettingsOpen && root.promptInput) root.promptInput.forceActiveFocus() })
+  }
+
+  function dismissActiveOverlay(closeCallback) {
+    if (root.isTargetDropdownOpen) {
+      root.isTargetDropdownOpen = false
+    } else if (root.isAgentPickerOpen) {
+      root.isAgentPickerOpen = false
+    } else if (root.isSettingsOpen) {
+      root.isSettingsOpen = false
+      root.loadSettings()
+    } else if (root.isConfirmingDeleteSession) {
+      root.isConfirmingDeleteSession = false
+    } else if (root.isEditingTitle) {
+      root.isEditingTitle = false
+    } else if (closeCallback) {
+      closeCallback()
+    }
+  }
+
+  function openAppWindow() {
+    if (root.promptInput) root.promptDraft = root.promptInput.text
+    root.appWindowOpen = true
+    root.close()
+    root.resetTransientUi()
   }
 
   function closeAppWindow() {
@@ -194,27 +214,25 @@ Panel {
     root.appWindowOpen ? root.closeAppWindow() : root.openAppWindow()
   }
 
-  function getMonogram(name) {
-    if (!name || typeof name !== "string") return "H"
+  function findAgentTarget(name) {
+    if (!name || typeof name !== "string") return null
     for (var i = 0; i < root.allAgentTargets.length; i++) {
       var t = root.allAgentTargets[i]
-      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
-        if (t.monogram) return t.monogram
-      }
+      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) return t
     }
-    var clean = name.trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
+    return null
+  }
+
+  function getMonogram(name) {
+    var t = root.findAgentTarget(name)
+    if (t && t.monogram) return t.monogram
+    var clean = String(name || "").trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
     return (clean[0] || "H").toUpperCase()
   }
 
   function getAgentColor(name) {
-    if (!name || typeof name !== "string") return "#3B82F6"
-    for (var i = 0; i < root.allAgentTargets.length; i++) {
-      var t = root.allAgentTargets[i]
-      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
-        if (t.color) return t.color
-      }
-    }
-    return "#3B82F6"
+    var t = root.findAgentTarget(name)
+    return (t && t.color) ? t.color : "#3B82F6"
   }
 
   function getEndpointDisplayName(endpointId) {
@@ -256,15 +274,6 @@ Panel {
     if (t && t.endpointId) return (t.profileName && t.profileName !== "default") ? t.profileName : root.getEndpointDisplayName(t.endpointId)
     var target = root.activeTargetDisplayName()
     return (target && target !== "Hermes") ? target : (root.serverName || "Hermes")
-  }
-
-  function getSessionAgentDisplayName(s) {
-    if (!s) return root.serverName || "Hermes"
-    var epName = s.endpoint_name || getEndpointDisplayName(s.endpoint_id)
-    if (s.profile_name && s.profile_name !== "default") {
-      return epName ? (epName + " (" + s.profile_name + ")") : s.profile_name
-    }
-    return epName || (root.serverName || "Hermes")
   }
 
   function getSessionMonogram(s) {
@@ -433,7 +442,6 @@ Panel {
   property string activeSessionTitle: "New Session"
   property string currentModel: "hermes-agent"
   property string searchQuery: ""
-  property bool omarchyOnly: false
   property bool hideCronSessions: false
   property bool hasSelectedInitialSession: false
 
@@ -583,17 +591,7 @@ Panel {
       if (root.appWindowOpen) {
         root.closeAppWindow()
       }
-      root.isConfirmingDeleteSession = false
-      root.isConfirmingDeleteEndpoint = false
-      root.isTargetDropdownOpen = false
-      root.isAgentPickerOpen = false
-      root.settingsErrorMessage = ""
-      root.settingsSuccessMessage = ""
-      triggerRefresh()
-      root.loadSettings()
-      Qt.callLater(function() {
-        if (!root.isSettingsOpen && promptInput) promptInput.forceActiveFocus()
-      })
+      root.resetTransientUi()
     }
   }
 
@@ -663,7 +661,6 @@ Panel {
     try {
       var res = JSON.parse(String(text).trim())
       root.isConnected = res.connected === true
-      root.serverUrl = res.baseUrl || ""
       if (res.models && res.models.length > 0) {
         root.currentModel = res.models[0]
       }
@@ -917,7 +914,7 @@ Panel {
   }
 
   function collapseToSingleLine(raw) {
-    return String(raw || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim()
+    return String(raw || "").replace(/\s+/g, " ").trim()
   }
 
   function sanitizeSessionTitle(raw) {
@@ -1387,9 +1384,6 @@ Panel {
 
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i]
-      if (omarchyOnly && s.source !== "omarchy-bar" && s.source !== "api-server") {
-        continue
-      }
       if (hideCronSessions && s.source === "cron") {
         continue
       }
@@ -1425,7 +1419,6 @@ Panel {
 
   onSessionsChanged: updateFilteredSessions()
   onSearchQueryChanged: updateFilteredSessions()
-  onOmarchyOnlyChanged: updateFilteredSessions()
   onHideCronSessionsChanged: updateFilteredSessions()
   onActiveTargetChanged: updateFilteredSessions()
 
@@ -1910,6 +1903,16 @@ Panel {
       return
     }
 
+    function parseCw(val, label) {
+      if (val === undefined || val === null || String(val).trim() === "") return { ok: true, val: null }
+      var n = parseInt(val, 10)
+      if (isNaN(n) || n < 1) {
+        root.settingsErrorMessage = label + " context window must be a positive integer."
+        return { ok: false }
+      }
+      return { ok: true, val: n }
+    }
+
     var eps = cloneSettings(root.settingsEndpoints)
     for (var i = 0; i < eps.length; i++) {
       var ep = eps[i]
@@ -1927,15 +1930,6 @@ Panel {
       if (isNaN(port) || port < 1 || port > 65535) {
         root.settingsErrorMessage = "Endpoint '" + name + "' port must be between 1 and 65535."
         return
-      }
-      function parseCw(val, label) {
-        if (val === undefined || val === null || String(val).trim() === "") return { ok: true, val: null }
-        var n = parseInt(val, 10)
-        if (isNaN(n) || n < 1) {
-          root.settingsErrorMessage = label + " context window must be a positive integer."
-          return { ok: false }
-        }
-        return { ok: true, val: n }
       }
       var epCw = parseCw(ep.contextWindow, "Endpoint '" + name + "'")
       if (!epCw.ok) return
@@ -2458,17 +2452,12 @@ Panel {
   }
 
   Component.onDestruction: {
-    if (statusProc.running) statusProc.signal(15)
-    if (listSessionsProc.running) listSessionsProc.signal(15)
-    if (getSessionProc.running) getSessionProc.signal(15)
-    if (deleteSessionProc.running) deleteSessionProc.signal(15)
-    if (renameSessionProc.running) renameSessionProc.signal(15)
-    if (getSettingsProc.running) getSettingsProc.signal(15)
-    if (saveSettingsProc.running) saveSettingsProc.signal(15)
-    if (setHideCronProc.running) setHideCronProc.signal(15)
-    if (setAppWindowGeometryProc.running) setAppWindowGeometryProc.signal(15)
-    if (listTargetsProc.running) listTargetsProc.signal(15)
-    if (setActiveTargetProc.running) setActiveTargetProc.signal(15)
+    var procs = [statusProc, listSessionsProc, getSessionProc, deleteSessionProc, renameSessionProc,
+                 getSettingsProc, saveSettingsProc, setHideCronProc, setAppWindowGeometryProc,
+                 listTargetsProc, setActiveTargetProc]
+    for (var i = 0; i < procs.length; i++) {
+      if (procs[i].running) procs[i].signal(15)
+    }
     if (root.activeStreams) {
       for (var sid in root.activeStreams) {
         var s = root.activeStreams[sid]
@@ -6348,20 +6337,7 @@ Panel {
         }
       }
       onCloseRequested: {
-        if (root.isTargetDropdownOpen) {
-          root.isTargetDropdownOpen = false
-        } else if (root.isAgentPickerOpen) {
-          root.isAgentPickerOpen = false
-        } else if (root.isSettingsOpen) {
-          root.isSettingsOpen = false
-          root.loadSettings()
-        } else if (root.isConfirmingDeleteSession) {
-          root.isConfirmingDeleteSession = false
-        } else if (root.isEditingTitle) {
-          root.isEditingTitle = false
-        } else {
-          root.close()
-        }
+        root.dismissActiveOverlay(root.close)
       }
 
       ColumnLayout {
@@ -6441,20 +6417,7 @@ Panel {
         if (root.handleCommonShortcut(event)) return
         if (root.promptInput && root.promptInput.activeFocus) return
         if (event.key === Qt.Key_Escape) {
-          if (root.isTargetDropdownOpen) {
-            root.isTargetDropdownOpen = false
-          } else if (root.isAgentPickerOpen) {
-            root.isAgentPickerOpen = false
-          } else if (root.isSettingsOpen) {
-            root.isSettingsOpen = false
-            root.loadSettings()
-          } else if (root.isConfirmingDeleteSession) {
-            root.isConfirmingDeleteSession = false
-          } else if (root.isEditingTitle) {
-            root.isEditingTitle = false
-          } else {
-            root.closeAppWindow()
-          }
+          root.dismissActiveOverlay(root.closeAppWindow)
           event.accepted = true
         } else if (event.key === Qt.Key_Up) {
           root.navigatePromptHistory(true)
