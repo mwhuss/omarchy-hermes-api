@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # Toggle (or open/close) the Omarchy Hermes API flyout via Quickshell IPC.
 # Usage: hermes-toggle [toggle|open|close|toggleAppWindow]   (default: toggle)
 set -euo pipefail
@@ -12,9 +12,14 @@ case "$verb" in
   *) echo "usage: hermes-toggle [toggle|open|close|toggleAppWindow]" >&2; exit 1 ;;
 esac
 
-if ! command -v quickshell >/dev/null 2>&1; then
-  echo "hermes-toggle: 'quickshell' CLI not found on PATH" >&2
+QUICKSHELL_BIN="/usr/bin/quickshell"
+if [ ! -x "$QUICKSHELL_BIN" ]; then
+  QUICKSHELL_BIN="$(command -v quickshell 2>/dev/null || true)"
+fi
+
+if [ -z "$QUICKSHELL_BIN" ] || [ ! -x "$QUICKSHELL_BIN" ]; then
+  echo "hermes-toggle: 'quickshell' binary not found at /usr/bin/quickshell or on PATH" >&2
   exit 1
 fi
 
-quickshell -p "$SHELL_PROJECT" ipc call "$IPC_TARGET" "$verb"
+"$QUICKSHELL_BIN" -p "$SHELL_PROJECT" ipc call "$IPC_TARGET" "$verb"

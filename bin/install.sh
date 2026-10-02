@@ -20,23 +20,23 @@ if ! /usr/bin/node -e 'process.exit(process.versions.node.split(".")[0] >= 18 ? 
   exit 1
 fi
 
-mkdir -p "$HOME/.config/omarchy/plugins"
+/usr/bin/mkdir -p "$HOME/.config/omarchy/plugins"
 
 # Remove existing target if it's a symlink or directory
 if [ -L "$TARGET_DIR" ]; then
   echo "==> Unlinking existing plugin link at $TARGET_DIR"
-  rm -f "$TARGET_DIR"
+  /usr/bin/rm -f "$TARGET_DIR"
 elif [ -d "$TARGET_DIR" ]; then
   echo "==> Removing existing plugin directory at $TARGET_DIR"
-  rm -rf "$TARGET_DIR"
+  /usr/bin/rm -rf "$TARGET_DIR"
 fi
 
 echo "==> Symlinking plugin into Omarchy plugins directory..."
-ln -s "$SRC_DIR" "$TARGET_DIR"
+/usr/bin/ln -s "$SRC_DIR" "$TARGET_DIR"
 
 echo "==> Ensuring bridge script is executable..."
-chmod +x "$SRC_DIR/bin/hermes-bridge.js"
-chmod +x "$SRC_DIR/bin/hermes-toggle"
+/usr/bin/chmod +x "$SRC_DIR/bin/hermes-bridge.js"
+/usr/bin/chmod +x "$SRC_DIR/bin/hermes-toggle"
 
 echo "==> Plugin installation complete!"
 echo "You can now add '$PLUGIN_ID' to your bar widgets in ~/.config/omarchy/shell.json or restart Omarchy shell."
