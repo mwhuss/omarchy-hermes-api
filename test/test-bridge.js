@@ -1685,6 +1685,129 @@ async function testSecurityHardening() {
   }
 }
 
+async function testComprehensiveSecurityHardening() {
+  console.log('Testing: comprehensive security audit hardening (IPC, shell injection, URL allowlist, session ID validation)...');
+  const guard = require(path.join(__dirname, '..', 'bin', 'url-guard.js'));
+
+  // 1. Session ID validation (isValidSessionId)
+  assert.strictEqual(guard.isValidSessionId('seed-session-1'), true);
+  assert.strictEqual(guard.isValidSessionId('endpoint-default:default:seed-session-1'), true);
+  assert.strictEqual(guard.isValidSessionId('api-muqf7bvu-kcof2'), true);
+  assert.strictEqual(guard.isValidSessionId('cron_test-job-1_1700000000'), true);
+  assert.strictEqual(guard.isValidSessionId('a'.repeat(128)), true);
+
+  // Rejected session IDs
+  assert.strictEqual(guard.isValidSessionId(''), false, 'empty ID rejected');
+  assert.strictEqual(guard.isValidSessionId(null), false, 'null rejected');
+  assert.strictEqual(guard.isValidSessionId(12345), false, 'non-string rejected');
+  assert.strictEqual(guard.isValidSessionId('a'.repeat(129)), false, 'over-length rejected');
+  assert.strictEqual(guard.isValidSessionId('../traversal'), false, 'traversal rejected');
+  assert.strictEqual(guard.isValidSessionId('session/slash'), false, 'forward slash rejected');
+  assert.strictEqual(guard.isValidSessionId('session\\backslash'), false, 'backslash rejected');
+  assert.strictEqual(guard.isValidSessionId(':leading-colon'), false, 'leading colon rejected');
+  assert.strictEqual(guard.isValidSessionId('trailing-colon:'), false, 'trailing colon rejected');
+  assert.strictEqual(guard.isValidSessionId('endpoint::session'), false, 'empty part rejected');
+  assert.strictEqual(guard.isValidSessionId('endpoint:.:session'), false, 'single dot part rejected');
+  assert.strictEqual(guard.isValidSessionId('endpoint:..:session'), false, 'double dot part rejected');
+  assert.strictEqual(guard.isValidSessionId('.'), false, 'dot rejected');
+  assert.strictEqual(guard.isValidSessionId('..'), false, 'double dot rejected');
+  assert.strictEqual(guard.isValidSessionId('session\x00null'), false, 'null byte rejected');
+  assert.strictEqual(guard.isValidSessionId('session\nid'), false, 'newline rejected');
+  assert.strictEqual(guard.isValidSessionId('session$id'), false, 'dollar rejected');
+
+  // 2. sanitizePlain
+  assert.strictEqual(guard.sanitizePlain('Hello <script> & "world"'), 'Hello script  "world"');
+  assert.strictEqual(guard.sanitizePlain('Hello\x85\u200b\u202eWorld'), 'Hello   World', 'C1, zero-width, bidi stripped');
+  assert.strictEqual(guard.sanitizePlain('   trimmed   '), 'trimmed');
+  assert.strictEqual(guard.sanitizePlain('toolong', 4), 'tool');
+  assert.strictEqual(guard.sanitizePlain(null), '');
+
+  // 3. Widget.qml security contract inspection
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  const widgetContent = fs.readFileSync(widgetPath, 'utf8');
+  assert.ok(
+    widgetContent.includes('if (cleanId && !root.isValidSessionId(cleanId)) return "invalid-session-id"'),
+    'Widget.qml syncSession must immediately validate session ID'
+  );
+  assert.ok(
+    widgetContent.includes('["/usr/bin/quickshell", "-p", "/usr/share/omarchy/shell"'),
+    'Widget.qml postCompletionNotification must use absolute /usr/bin/quickshell in execArgv'
+  );
+  assert.ok(
+    widgetContent.includes('return UrlGuard.isValidSessionId(id)'),
+    'Widget.qml isValidSessionId must delegate to UrlGuard'
+  );
+  assert.ok(
+    widgetContent.includes('return UrlGuard.sanitizePlain(str, maxLen)'),
+    'Widget.qml sanitizePlain must delegate to UrlGuard'
+  );
+
+  // 4. bin/hermes-toggle and bin/install.sh absolute path contract
+  const toggleContent = fs.readFileSync(path.join(__dirname, '..', 'bin', 'hermes-toggle'), 'utf8');
+  assert.ok(toggleContent.startsWith('#!/usr/bin/bash'), 'hermes-toggle must use /usr/bin/bash shebang');
+  assert.ok(toggleContent.includes('QUICKSHELL_BIN="/usr/bin/quickshell"'), 'hermes-toggle must check /usr/bin/quickshell');
+
+  const installContent = fs.readFileSync(path.join(__dirname, '..', 'bin', 'install.sh'), 'utf8');
+  assert.ok(installContent.includes('/usr/bin/mkdir -p'), 'install.sh must use /usr/bin/mkdir');
+  assert.ok(installContent.includes('/usr/bin/ln -s'), 'install.sh must use /usr/bin/ln');
+  assert.ok(installContent.includes('/usr/bin/chmod +x'), 'install.sh must use /usr/bin/chmod');
+
+  // 5. Bridge session ID validation (end-to-end)
+  const getRes = await runBridge(['get-session', '--', '../traversal']);
+  assert.strictEqual(getRes.code, 0);
+  const getJson = JSON.parse(getRes.stdout);
+  assert.strictEqual(getJson.success, false);
+  assert.strictEqual(getJson.error, 'Valid session ID required');
+
+  const delRes = await runBridge(['delete-session', '--', '../traversal']);
+  assert.strictEqual(delRes.code, 0);
+  const delJson = JSON.parse(delRes.stdout);
+  assert.strictEqual(delJson.success, false);
+  assert.strictEqual(delJson.error, 'Valid session ID required');
+
+  const renRes = await runBridge(['rename-session', '--', '../traversal', 'New Title']);
+  assert.strictEqual(renRes.code, 0);
+  const renJson = JSON.parse(renRes.stdout);
+  assert.strictEqual(renJson.success, false);
+  assert.strictEqual(renJson.error, 'Valid session ID and new title required');
+
+  const chatRes = await runBridge(['stream-chat', '--session', '../traversal', '--prompt', 'hello']);
+  assert.strictEqual(chatRes.code, 0);
+  const chatJson = JSON.parse(chatRes.stdout.trim().split('\n')[0]);
+  assert.strictEqual(chatJson.type, 'error');
+  assert.strictEqual(chatJson.error, 'Invalid session ID format');
+
+  // 6. Bridge settings and URL validation (end-to-end)
+  const userinfoSettings = JSON.stringify({
+    endpoints: [{ id: 'ep-test', name: 'Userinfo EP', url: 'http://user:pass@127.0.0.1:8642' }]
+  });
+  const userinfoRes = await runBridge(['save-settings', '--stdin'], userinfoSettings);
+  const userinfoJson = JSON.parse(userinfoRes.stdout);
+  assert.strictEqual(userinfoJson.success, false);
+  assert(userinfoJson.error.includes('must not contain credentials'));
+
+  const badProtoSettings = JSON.stringify({
+    endpoints: [{ id: 'ep-test', name: 'FTP EP', url: 'ftp://127.0.0.1:8642' }]
+  });
+  const badProtoRes = await runBridge(['save-settings', '--stdin'], badProtoSettings);
+  const badProtoJson = JSON.parse(badProtoRes.stdout);
+  assert.strictEqual(badProtoJson.success, false);
+  assert(badProtoJson.error.includes('must use http or https protocol'));
+
+  // 7. Geometry clamping
+  const geomRes = await runBridge(['set-app-window-geometry', '99999', '99999']);
+  assert.strictEqual(geomRes.code, 0);
+  const geomJson = JSON.parse(geomRes.stdout);
+  assert.strictEqual(geomJson.success, true);
+  assert.strictEqual(geomJson.appWindow.width, 7680, 'oversized width clamped to 7680');
+  assert.strictEqual(geomJson.appWindow.height, 4320, 'oversized height clamped to 4320');
+
+  // Reset geometry to standard defaults
+  await runBridge(['set-app-window-geometry', '800', '650']);
+
+  console.log('  ✔ comprehensive security hardening verified across all vectors');
+}
+
 async function testDeleteCreatedSessions() {
   console.log(`Testing: delete-session command and cleanup of created test sessions...`);
   assert(createdSessionIds.length > 0, 'Should have tracked sessions created during testing');
@@ -1914,7 +2037,17 @@ function testUrlGuard() {
     'https://.com',
     'https://-bad.com',
     'http://example.com:99999',
-    'http://example.com:80:443'
+    'http://example.com:80:443',
+    'http://example.com:0',
+    'http://[::1]:0',
+    'http://127.999.999.999',
+    'http://300.1.2.3',
+    'http://1.2.3.4.5',
+    'http://01.1.1.1',
+    'http://foo.123',
+    'https://example.com/\u200B',
+    'https://example.com/\u202Ereversed',
+    'https://example.com/\uFEFF'
   ];
   for (const url of rejectedHardened) {
     assert.strictEqual(guard.isAllowedWebUrl(url), false, `should reject ${JSON.stringify(url)}`);
@@ -2481,6 +2614,7 @@ async function runAllTests() {
     await testNon2xxNormalErrorBody();
     await testBoundedResponse();
     await testSecurityHardening();
+    await testComprehensiveSecurityHardening();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');
