@@ -139,8 +139,8 @@ function sanitizeMarkdown(markdown) {
     return lead + tokenPrefix + idx + "\uE001";
   });
 
-  // 2. Inline code spans (1+ backticks)
-  text = text.replace(/(`+)(?:[^\n`]|[\s\S]*?[^\n`])\1/g, function(match) {
+  // 2. Inline code spans (1+ backticks, no blank lines, exact matching delimiter runs)
+  text = text.replace(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\r?\n)[\s\S])+?)(?<!`)\1(?!`)/g, function(match) {
     var idx = codeBlocks.length;
     codeBlocks.push(match);
     return tokenPrefix + idx + "\uE001";
@@ -208,6 +208,12 @@ function sanitizeMarkdown(markdown) {
   // 10. Strip all remaining HTML/XML tags
   text = text.replace(/<[a-zA-Z\/!?][^>]*>/g, "");
   text = text.replace(/<[a-zA-Z\/!?][^>]*$/g, "");
+  // Preserve separation between restored code blocks/spans and adjacent
+  // code blocks or backtick/tilde runs. When intervening HTML is removed,
+  // adjacent code spans must not coalesce their delimiter backticks into
+  // ambiguous runs that expose previously protected Markdown syntax.
+  text = text.replace(/(\uE001)(?=\uE000|[`~])/g, "$1 ");
+  text = text.replace(/([`~])(?=\uE000)/g, "$1 ");
 
   // 11. Restore protected code blocks literally
   for (var i = 0; i < codeBlocks.length; i++) {

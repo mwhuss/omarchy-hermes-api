@@ -2110,7 +2110,53 @@ function testSanitizeMarkdown() {
   const sanitizedHuge = guard.sanitizeMarkdown(hugeInput);
   assert.strictEqual(sanitizedHuge.length, 1024 * 1024, 'oversized input must be capped safely');
 
-  console.log('  ✔ sanitizeMarkdown trust boundary verified across 25 hostile & regression cases');
+  // 9. Hostile code span separation and backtick run coalescence (Issue #78 / marketplace #9477)
+  // Stripped intervening HTML must not cause adjacent spans with different delimiter lengths
+  // to coalesce into unmatched delimiter runs that expose previously protected Markdown image syntax.
+  const hostileAdjacentWithHtml = '`x`<span></span>``y` ![leak](http://evil.com/leak.png) `z``';
+  const sanitizedAdjacentWithHtml = guard.sanitizeMarkdown(hostileAdjacentWithHtml);
+  assert.strictEqual(
+    sanitizedAdjacentWithHtml,
+    '`x` ``y` ![leak](http://evil.com/leak.png) `z``',
+    'intervening HTML between spans must preserve separation so delimiters do not coalesce'
+  );
+
+  // Directly adjoining spans without intervening HTML: the 1-backtick span closes before the image syntax,
+  // leaving the image syntax in text where it is properly neutralized.
+  const hostileAdjoiningSpans = '`x````y` ![leak](http://evil.com/leak.png) `z``';
+  const sanitizedAdjoiningSpans = guard.sanitizeMarkdown(hostileAdjoiningSpans);
+  assert.strictEqual(
+    sanitizedAdjoiningSpans,
+    '`x````y` [Image: leak](http://evil.com/leak.png) `z``',
+    'adjoining backtick spans must not bypass image neutralization'
+  );
+
+  // Restoring code spans adjacent to other spans or raw text backticks must preserve separation
+  assert.strictEqual(
+    guard.sanitizeMarkdown('`x`<span></span>`'),
+    '`x` `',
+    'code span followed by raw backtick must preserve separation when intervening HTML is stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('`a`<span></span>`b`'),
+    '`a` `b`',
+    'adjacent 1-backtick spans must preserve separation when intervening HTML is stripped'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('`a`<span></span>``b``'),
+    '`a` ``b``',
+    'adjacent 1-backtick and 2-backtick spans must preserve separation when intervening HTML is stripped'
+  );
+
+  // Code spans cannot cross blank lines / paragraph breaks (CommonMark standard)
+  const hostileBlankLineSpan = '`unmatched\n\n![leak](http://evil.com/leak.png)\n\nx`';
+  const sanitizedBlankLine = guard.sanitizeMarkdown(hostileBlankLineSpan);
+  assert(
+    sanitizedBlankLine.includes('[Image: leak](http://evil.com/leak.png)'),
+    'unmatched backtick across blank lines must not protect image syntax from neutralization'
+  );
+
+  console.log('  ✔ sanitizeMarkdown trust boundary verified across 30 hostile & regression cases');
 }
 
 function testKeyboardShortcutsAndNavigation() {
