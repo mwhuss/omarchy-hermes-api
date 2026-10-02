@@ -2425,6 +2425,569 @@ function testKeyboardShortcutsAndNavigation() {
   console.log('  ✔ keyboard navigation shortcuts and sidebar drawer verified');
 }
 
+async function testSseStreamMultiByteUtf8Boundaries() {
+  console.log('Testing: SSE stream multi-byte UTF-8 chunks across boundaries...');
+  const testString = 'Start: é λ € 日本語 🚀 🌍 🎉 :End';
+  const ssePayload = `data: {"choices":[{"delta":{"content":${JSON.stringify(testString)}}}]}\n\ndata: [DONE]\n\n`;
+  const sseBuffer = Buffer.from(ssePayload, 'utf8');
+
+  // Fragment raw buffer into 3-byte chunks to slice across 2, 3, and 4-byte UTF-8 character boundaries
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      const chunkSize = 3;
+      for (let offset = 0; offset < sseBuffer.length; offset += chunkSize) {
+        res.write(sseBuffer.subarray(offset, Math.min(offset + chunkSize, sseBuffer.length)));
+      }
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'test utf8'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+
+    const deltaEvents = events.filter(e => e.type === 'delta');
+    assert(deltaEvents.length > 0, 'delta event should be emitted');
+    const assembledDeltas = deltaEvents.map(e => e.content).join('');
+    assert.strictEqual(assembledDeltas, testString, 'assembled deltas must match original string without UTF-8 corruption');
+    assert(!assembledDeltas.includes('\uFFFD'), 'no replacement characters should exist in deltas');
+
+    const doneEvent = events.find(e => e.type === 'done');
+    assert(doneEvent, 'done event should be emitted');
+    assert.strictEqual(doneEvent.full_text, testString, 'done.full_text must match original string');
+    assert(!doneEvent.full_text.includes('\uFFFD'), 'no replacement characters should exist in full_text');
+
+    console.log('  ✔ multi-byte UTF-8 chunks across boundaries decoded cleanly without replacement characters');
+  } finally {
+    server.close();
+  }
+}
+
+async function testSseStreamMalformedJsonEvents() {
+  console.log('Testing: SSE stream malformed JSON and null chunks...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      // 1. Broken JSON syntax
+      res.write('data: {unclosed: json syntax\n\n');
+      // 2. null payload (guarded in processSseLine)
+      res.write('data: null\n\n');
+      // 3. primitive values
+      res.write('data: 12345\n\n');
+      res.write('data: "plain string"\n\n');
+      res.write('data: true\n\n');
+      // 4. empty or array payloads
+      res.write('data: []\n\n');
+      res.write('data: \n\n');
+      // 5. unexpected objects
+      res.write('data: {}\n\n');
+      res.write('data: {"unexpected_key": true}\n\n');
+      res.write('data: {"choices": []}\n\n');
+      res.write('data: {"choices": [null]}\n\n');
+      res.write('data: {"choices": [{"delta": null}]}\n\n');
+      res.write('data: {"choices": [{"delta": {}}]}\n\n');
+      // 6. malformed custom events
+      res.write('event: hermes.tool.progress\n');
+      res.write('data: invalid-tool-json\n\n');
+      res.write('event: hermes.reasoning.delta\n');
+      res.write('data: invalid-reasoning-json\n\n');
+      // 7. valid delta following the hostile/malformed payloads
+      res.write('data: {"choices":[{"delta":{"content":"Recovered successfully"}}]}\n\n');
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'test malformed'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+
+    assert(!events.some(e => e.type === 'error'), 'stream should not abort with an error on malformed chunks');
+    const delta = events.find(e => e.type === 'delta');
+    assert(delta, 'valid delta after malformed chunks must be emitted');
+    assert.strictEqual(delta.content, 'Recovered successfully');
+
+    const done = events.find(e => e.type === 'done');
+    assert(done, 'done event should be emitted');
+    assert.strictEqual(done.full_text, 'Recovered successfully');
+
+    console.log('  ✔ malformed JSON and null chunks gracefully skipped without stream interruption');
+  } finally {
+    server.close();
+  }
+}
+
+async function testSseStreamParsingNuances() {
+  console.log('Testing: SSE stream parsing nuances (CRLF, comments, unknown events, trailing buffer)...');
+  const server = await startTestServer((req, res) => {
+    if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+      });
+      // 1. CRLF line endings throughout
+      res.write(': keep-alive comment with space\r\n\r\n');
+      res.write(':\r\n\r\n');
+      res.write(': ping comment\r\n\r\n');
+      // 2. Unknown custom event followed by blank line
+      res.write('event: unknown.telemetry.event\r\n');
+      res.write('data: {"telemetry": 1}\r\n\r\n');
+      // 3. Multiple consecutive blank lines
+      res.write('\r\n\r\n\r\n');
+      // 4. Tool call with missing function or arguments
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"id":"call_empty_fn","function":null}]}}]}\r\n\r\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"id":"call_empty_name","function":{"name":""}}]}}]}\r\n\r\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"id":"call_valid","function":{"name":"grep","arguments":"{\\"query\\":\\"test\\"}"}}]}}]}\r\n\r\n');
+      // 5. Delta content with CRLF
+      res.write('data: {"choices":[{"delta":{"content":"Line 1\\r\\nLine 2"}}]}\r\n\r\n');
+      // 6. [DONE] with trailing whitespace
+      res.write('data: [DONE]   \r\n\r\n');
+      // 7. Trailing content in buffer without trailing newline
+      res.write('data: {"choices":[{"delta":{"content":" Final"}}]}');
+      res.end();
+    } else {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+
+  try {
+    const res = await runBridge(['stream-chat', '--prompt', 'test nuances'], null, {
+      HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+      HERMES_API_SERVER_PORT: String(server.address().port)
+    });
+
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+    const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+
+    const toolEvents = events.filter(e => e.type === 'tool_progress');
+    assert.strictEqual(toolEvents.length, 1, 'only valid tool call should produce tool_progress');
+    assert.strictEqual(toolEvents[0].tool, 'grep');
+    assert.strictEqual(toolEvents[0].id, 'call_valid');
+
+    const done = events.find(e => e.type === 'done');
+    assert(done, 'done event should be emitted');
+    assert.strictEqual(done.full_text, 'Line 1\r\nLine 2 Final', 'full_text must include trailing buffer content');
+
+    console.log('  ✔ SSE parser correctly handled CRLF, comments, unknown events, and trailing buffer');
+  } finally {
+    server.close();
+  }
+}
+
+async function testExtremeTimeouts() {
+  console.log('Testing: extreme timeouts (idle timeout, boundedFetch request timeout, stream duration)...');
+  const { boundedFetch } = require(bridgePath);
+
+  // 1. Extreme idle timeout: server sends initial chunk then stops transmitting
+  {
+    const server = await startTestServer((req, res) => {
+      if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write('data: {"choices":[{"delta":{"content":"first token"}}]}\n\n');
+        // Stop sending chunks; connection remains open indefinitely
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    try {
+      const t0 = Date.now();
+      const res = await runBridge(['stream-chat', '--prompt', 'test idle timeout'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+        HERMES_API_SERVER_PORT: String(server.address().port),
+        HERMES_IDLE_TIMEOUT_MS: '250'
+      });
+      const elapsed = Date.now() - t0;
+
+      assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}. stderr: ${res.stderr}`);
+      const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      const errorEvent = events.find(e => e.type === 'error');
+      assert(errorEvent, 'idle timeout must produce an error event');
+      assert(/inactivity/i.test(errorEvent.error), `error should mention inactivity, got: ${errorEvent.error}`);
+      assert(elapsed < 3000, `idle timeout must trigger promptly, took ${elapsed}ms`);
+      console.log(`  ✔ extreme idle timeout fired promptly at ~${elapsed}ms`);
+    } finally {
+      server.close();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    }
+  }
+
+  // 2. Extreme boundedFetch request timeout against a stalled connection (never sends headers)
+  {
+    const server = await startTestServer((req, res) => {
+      // Intentionally never send headers or end response
+    });
+
+    try {
+      const t0 = Date.now();
+      await assert.rejects(
+        boundedFetch(`http://127.0.0.1:${server.address().port}/hang`, {}, 1024, 150),
+        /timed out after 150 ms/i
+      );
+      const elapsed = Date.now() - t0;
+      assert(elapsed < 2000, `request timeout should abort promptly, took ${elapsed}ms`);
+      console.log(`  ✔ extreme boundedFetch request timeout aborted at ~${elapsed}ms`);
+    } finally {
+      server.close();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    }
+  }
+
+  // 3. Extreme total-duration ceiling with rapid heartbeats (preventing idle timer)
+  {
+    const server = await startTestServer((req, res) => {
+      if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        const interval = setInterval(() => {
+          if (!res.writableEnded) res.write(': heartbeat\n\n');
+        }, 30);
+        res.on('close', () => clearInterval(interval));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    try {
+      const t0 = Date.now();
+      const res = await runBridge(['stream-chat', '--prompt', 'test duration ceiling'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+        HERMES_API_SERVER_PORT: String(server.address().port),
+        HERMES_STREAM_DURATION_MS: '200'
+      });
+      const elapsed = Date.now() - t0;
+
+      assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+      const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      const errorEvent = events.find(e => e.type === 'error');
+      assert(errorEvent, 'total duration ceiling must produce an error event');
+      assert(/total duration/i.test(errorEvent.error), `error should mention total duration, got: ${errorEvent.error}`);
+      assert(elapsed < 2500, `duration ceiling should abort promptly, took ${elapsed}ms`);
+      console.log(`  ✔ extreme stream duration ceiling fired promptly at ~${elapsed}ms`);
+    } finally {
+      server.close();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    }
+  }
+}
+
+async function testSocketDisconnects() {
+  console.log('Testing: socket disconnects (mid-stream, pre-headers, body consumption)...');
+  const { boundedFetch, readBoundedJson } = require(bridgePath);
+
+  // 1. Socket abruptly destroyed mid-stream during SSE events
+  {
+    const server = await startTestServer((req, res) => {
+      if (req.url.endsWith('/chat/completions') && req.method === 'POST') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive'
+        });
+        res.write('data: {"choices":[{"delta":{"content":"before disconnect"}}]}\n\n');
+        setTimeout(() => {
+          req.socket.destroy();
+        }, 50);
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    try {
+      const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+        HERMES_API_SERVER_PORT: String(server.address().port)
+      });
+
+      assert.strictEqual(res.code, 0, `bridge must exit with code 0 on socket disconnect, got ${res.code}`);
+      const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      const start = events.find(e => e.type === 'start');
+      const delta = events.find(e => e.type === 'delta');
+      const error = events.find(e => e.type === 'error');
+
+      assert(start, 'start event must be emitted');
+      assert(delta, 'delta before disconnect must be emitted');
+      assert(error, 'error event must be emitted on socket disconnect');
+      assert(!events.some(e => e.type === 'done'), 'done event should not be emitted on socket disconnect');
+      console.log('  ✔ mid-stream socket disconnect handled gracefully with error event');
+    } finally {
+      server.close();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    }
+  }
+
+  // 2. Socket destroyed immediately before response headers (TCP RST / immediate abort)
+  {
+    const rawSockets = [];
+    const servers = [];
+    const server = await startRawServer((socket) => {
+      socket.on('data', () => {
+        socket.destroy();
+      });
+    }, rawSockets, servers);
+
+    try {
+      const res = await runBridge(['stream-chat', '--prompt', 'hello'], null, {
+        HERMES_API_SERVER_URL: `http://127.0.0.1:${server.address().port}`,
+        HERMES_API_SERVER_PORT: String(server.address().port)
+      });
+
+      assert.strictEqual(res.code, 0, `bridge must exit with code 0 on immediate socket reset, got ${res.code}`);
+      const events = res.stdout.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+      const error = events.find(e => e.type === 'error');
+      assert(error, 'error event must be emitted when server resets before headers');
+      console.log('  ✔ pre-headers socket disconnect handled gracefully with error event');
+    } finally {
+      server.close();
+      for (const s of rawSockets) try { s.destroy(); } catch (_) {}
+    }
+  }
+
+  // 3. Socket destroyed during readBoundedJson body consumption
+  {
+    const server = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.write('{"partial":');
+      setTimeout(() => {
+        req.socket.destroy();
+      }, 50);
+    });
+
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${server.address().port}/`, {}, 65536, 5000);
+      await assert.rejects(readBoundedJson(res, 65536));
+      console.log('  ✔ readBoundedJson cleanly rejects and releases on unexpected socket disconnect');
+    } finally {
+      server.close();
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    }
+  }
+}
+
+function testMonogramsComprehensive() {
+  console.log('Testing: monogram and color generation comprehensive edge cases...');
+  const { getAgentMonogram, getAgentColor } = require(bridgePath);
+
+  // 1. Delimiter-only strings (must return 'H' without throwing)
+  const delimiterOnly = ['---', '___', ' - _ ', '---___---', '   - - -   ', '___---___'];
+  for (const s of delimiterOnly) {
+    assert.strictEqual(getAgentMonogram(s), 'H', `Delimiter-only "${s}" should return "H"`);
+  }
+
+  // 2. Empty, whitespace, non-string fallbacks
+  const falsyOrNonString = ['', '   ', '\t\n\r', null, undefined, 12345, true, false, {}, [], () => {}];
+  for (const v of falsyOrNonString) {
+    assert.strictEqual(getAgentMonogram(v), 'H', `Falsy/non-string ${JSON.stringify(v)} should return "H"`);
+    assert.strictEqual(getAgentColor(v), '#6366F1', `Falsy/non-string ${JSON.stringify(v)} should return default indigo color`);
+  }
+
+  // 3. Single-character names
+  assert.strictEqual(getAgentMonogram('A'), 'A');
+  assert.strictEqual(getAgentMonogram('z'), 'Z');
+  assert.strictEqual(getAgentMonogram('7'), '7');
+
+  // 4. Single-word cases
+  assert.strictEqual(getAgentMonogram('hermes'), 'H');
+  assert.strictEqual(getAgentMonogram('assistant'), 'A');
+  assert.strictEqual(getAgentMonogram('HERMES'), 'HE');
+  assert.strictEqual(getAgentMonogram('LunaBot'), 'LB');
+  assert.strictEqual(getAgentMonogram('ChatGPT'), 'CG');
+  assert.strictEqual(getAgentMonogram('iPhone'), 'I');
+
+  // 5. Multi-word cases with various delimiters
+  assert.strictEqual(getAgentMonogram('hermes-agent'), 'HA');
+  assert.strictEqual(getAgentMonogram('hermes_agent'), 'HA');
+  assert.strictEqual(getAgentMonogram('hermes agent'), 'HA');
+  assert.strictEqual(getAgentMonogram('  hermes   agent  '), 'HA');
+  assert.strictEqual(getAgentMonogram('-hermes-agent-'), 'HA');
+  assert.strictEqual(getAgentMonogram('Deep Research Agent'), 'DR');
+  assert.strictEqual(getAgentMonogram('Omarchy Hermes Bar Plugin'), 'OH');
+
+  // 6. Accented / Unicode Latin
+  assert.strictEqual(getAgentMonogram('Émile Zola'), 'ÉZ');
+  assert.strictEqual(getAgentMonogram('ñaño'), 'Ñ');
+  assert.strictEqual(getAgentMonogram('Über Bot'), 'ÜB');
+
+  // 7. Multi-byte Emoji names (no broken surrogate pairs)
+  assert.strictEqual(getAgentMonogram('🤖'), '🤖');
+  assert.strictEqual(getAgentMonogram('🤖 Bot'), '🤖B');
+  assert.strictEqual(getAgentMonogram('🚀 Hermes'), '🚀H');
+  assert.strictEqual(getAgentMonogram('🎉 Party Bot'), '🎉P');
+
+  // 8. Color determinism and palette distribution
+  const c1 = getAgentColor('agent-alpha');
+  const c2 = getAgentColor('agent-alpha');
+  assert.strictEqual(c1, c2, 'Color generation must be strictly deterministic');
+  assert(/^#[0-9A-F]{6}$/i.test(c1), 'Color must be 6-digit hex');
+
+  const names = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta', 'Iota', 'Kappa'];
+  const uniqueColors = new Set(names.map(n => getAgentColor(n)));
+  assert(uniqueColors.size >= 4, `Palette distribution should yield multiple distinct colors, got ${uniqueColors.size}`);
+
+  console.log('  ✔ monogram and color edge cases verified across delimiters, unicode, emoji, and palette');
+}
+
+async function testBoundedReadersComprehensive() {
+  console.log('Testing: bounded readers comprehensive edge cases (file, text, json)...');
+  const { readBoundedFile, readBoundedText, readBoundedJson, boundedFetch } = require(bridgePath);
+
+  const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-readers-test-'));
+
+  try {
+    // A. readBoundedFile
+    // 1. Empty file (0 bytes) returns empty string
+    const emptyFile = path.join(testDir, 'empty.txt');
+    fs.writeFileSync(emptyFile, '', { mode: 0o600 });
+    assert.strictEqual(readBoundedFile(emptyFile, 1024), '', 'empty file should return empty string');
+
+    // 2. Exact maxBytes passes, maxBytes + 1 returns null
+    const exactFile = path.join(testDir, 'exact.txt');
+    fs.writeFileSync(exactFile, 'A'.repeat(500), { mode: 0o600 });
+    assert.strictEqual(readBoundedFile(exactFile, 500), 'A'.repeat(500), 'exact maxBytes should return content');
+    assert.strictEqual(readBoundedFile(exactFile, 499), null, 'exceeding maxBytes by 1 byte should return null');
+
+    // 3. Permission auto-tightening: file created with 0644 should be tightened to 0600
+    const looseFile = path.join(testDir, 'loose.txt');
+    fs.writeFileSync(looseFile, 'sensitive data', { mode: 0o644 });
+    const looseRead = readBoundedFile(looseFile, 1024);
+    assert.strictEqual(looseRead, 'sensitive data');
+    const looseStat = fs.statSync(looseFile);
+    assert.strictEqual(looseStat.mode & 0o777, 0o600, 'readBoundedFile must tighten loose file permissions to 0600');
+
+    // 4. Directory path returns null (not a regular file)
+    assert.strictEqual(readBoundedFile(testDir, 1024), null, 'directory path must return null');
+
+    // 5. Broken symlink returns null
+    const brokenSymlink = path.join(testDir, 'broken-symlink');
+    fs.symlinkSync(path.join(testDir, 'non-existent-target'), brokenSymlink);
+    assert.strictEqual(readBoundedFile(brokenSymlink, 1024), null, 'broken symlink must return null');
+
+    // B. readBoundedText & readBoundedJson
+    // 1. Empty body in readBoundedText returns empty string
+    const emptyServer = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end();
+    });
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${emptyServer.address().port}/`, {}, 1024, 2000);
+      const text = await readBoundedText(res, 1024);
+      assert.strictEqual(text, '', 'empty response body must return empty string');
+    } finally {
+      emptyServer.close();
+    }
+
+    // 2. Multi-byte UTF-8 split across write chunks in readBoundedText
+    const utf8Server = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      const emojiBytes = Buffer.from('Testing 🚀 Rocket', 'utf8');
+      // Split right in the middle of 🚀 (bytes 8..12)
+      res.write(emojiBytes.subarray(0, 10));
+      setTimeout(() => {
+        res.write(emojiBytes.subarray(10));
+        res.end();
+      }, 20);
+    });
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${utf8Server.address().port}/`, {}, 1024, 2000);
+      const text = await readBoundedText(res, 1024);
+      assert.strictEqual(text, 'Testing 🚀 Rocket', 'readBoundedText must decode multi-byte UTF-8 across chunks');
+      assert(!text.includes('\uFFFD'), 'no replacement characters in readBoundedText');
+    } finally {
+      utf8Server.close();
+    }
+
+    // 3. Multi-byte UTF-8 in readBoundedJson
+    const jsonUtf8Server = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const jsonBytes = Buffer.from(JSON.stringify({ greeting: 'こんにちは 🌍', count: 42 }), 'utf8');
+      res.write(jsonBytes.subarray(0, 15));
+      setTimeout(() => {
+        res.write(jsonBytes.subarray(15));
+        res.end();
+      }, 20);
+    });
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${jsonUtf8Server.address().port}/`, {}, 1024, 2000);
+      const json = await readBoundedJson(res, 1024);
+      assert.strictEqual(json.greeting, 'こんにちは 🌍', 'readBoundedJson must decode multi-byte UTF-8 across chunks');
+      assert.strictEqual(json.count, 42);
+    } finally {
+      jsonUtf8Server.close();
+    }
+
+    // 4. Valid JSON primitives in readBoundedJson (array, string, number, boolean)
+    const primServer = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[1, "two", true, null]');
+    });
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${primServer.address().port}/`, {}, 1024, 2000);
+      const json = await readBoundedJson(res, 1024);
+      assert.deepStrictEqual(json, [1, 'two', true, null], 'JSON array primitive should parse correctly');
+    } finally {
+      primServer.close();
+    }
+
+    // 5. Malformed JSON in readBoundedJson rejects with specific error
+    const badJsonServer = await startTestServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{ "unclosed": "key');
+    });
+    try {
+      const res = await boundedFetch(`http://127.0.0.1:${badJsonServer.address().port}/`, {}, 1024, 2000);
+      await assert.rejects(readBoundedJson(res, 1024), /Invalid JSON in response body/);
+    } finally {
+      badJsonServer.close();
+    }
+
+    // 6. Null res or null body fallbacks
+    assert.strictEqual(await readBoundedText(null, 1024), '');
+    assert.strictEqual(await readBoundedText({}, 1024), '');
+    assert.deepStrictEqual(await readBoundedJson(null, 1024), {});
+
+    console.log('  ✔ bounded readers verified across file permissions, UTF-8 chunk boundaries, JSON primitives, and error paths');
+  } finally {
+    fs.rmSync(testDir, { recursive: true, force: true });
+  }
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -2453,6 +3016,9 @@ async function runAllTests() {
     await testMockSseStreamWithReasoningDeltas();
     await testMockSseStreamReasoningCustomEvent();
     await testMockSseStreamWithTokenUsage();
+    await testSseStreamMultiByteUtf8Boundaries();
+    await testSseStreamMalformedJsonEvents();
+    await testSseStreamParsingNuances();
     await testManifest();
     testWidgetScrollToBottom();
     testUrlGuard();
@@ -2461,6 +3027,7 @@ async function runAllTests() {
     testCloseSettingsOnSave();
     await testSettings();
     await testMonograms();
+    testMonogramsComprehensive();
     await testListTargetsAndActiveTarget();
     await testStatus();
     await testListSessions();
@@ -2479,7 +3046,10 @@ async function runAllTests() {
     await testNon2xxStalledErrorBody();
     await testNon2xxSlowDripErrorBody();
     await testNon2xxNormalErrorBody();
+    await testExtremeTimeouts();
+    await testSocketDisconnects();
     await testBoundedResponse();
+    await testBoundedReadersComprehensive();
     await testSecurityHardening();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
