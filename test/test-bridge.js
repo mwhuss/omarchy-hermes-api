@@ -2237,7 +2237,67 @@ function testSanitizeMarkdown() {
     assert(!/(?:\\+)?!+\s*\[/.test(res), `sanitized output must never contain live image syntax: ${hostile} -> ${res}`);
   }
 
-  console.log('  ✔ sanitizeMarkdown trust boundary verified across 42 hostile & regression cases');
+  // 11. Escaped code span opening delimiters (Issue #90 / marketplace #9477 round 3)
+  // Qt/CommonMark treats a backslash-escaped opening backtick (\`) as a literal glyph,
+  // NOT a code span delimiter. A remote response containing an escaped opener, a Markdown image,
+  // and a closing backtick reaches live image rendering in Qt TextEdit.MarkdownText if treated
+  // as a protected code span. Therefore, sanitizeMarkdown must NOT treat backslash-escaped
+  // backtick runs as code span openers.
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\`![leak](https://example.com/leak.png)`'),
+    '\\`[Image: leak](https://example.com/leak.png)`',
+    'escaped opening backtick must not protect image syntax from neutralization'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('word\\`![leak](https://example.com/leak.png)`'),
+    'word\\`[Image: leak](https://example.com/leak.png)`',
+    'escaped opening backtick following word characters must not protect image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\`![leak][ref]`'),
+    '\\`[Image: leak][ref]`',
+    'escaped opening backtick with reference image must be neutralized'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\`![shortcut]`'),
+    '\\`[Image: shortcut]`',
+    'escaped opening backtick with shortcut image must be neutralized'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\``![leak](https://example.com/leak.png)``'),
+    '\\``[Image: leak](https://example.com/leak.png)``',
+    'escaped opening double backtick must not protect image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\```![leak](https://example.com/leak.png)```'),
+    '\\```[Image: leak](https://example.com/leak.png)```',
+    'escaped opening triple backtick must not protect image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\\\\\`![leak](https://example.com/leak.png)`'),
+    '\\\\\\`[Image: leak](https://example.com/leak.png)`',
+    'odd number of backslashes before backtick must not protect image syntax'
+  );
+
+  // Even number of backslashes before backtick: backslash is escaped, backtick opens valid code span.
+  // Content inside genuine code span remains protected literal code.
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\\\`![leak](https://example.com/leak.png)`'),
+    '\\\\`![leak](https://example.com/leak.png)`',
+    'even number of backslashes leaves backtick unescaped to open code span'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\\\``![leak](https://example.com/leak.png)``'),
+    '\\\\``![leak](https://example.com/leak.png)``',
+    'even number of backslashes leaves double backtick unescaped to open code span'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('\\\\\\\\`![leak](https://example.com/leak.png)`'),
+    '\\\\\\\\`![leak](https://example.com/leak.png)`',
+    'four backslashes leaves backtick unescaped to open code span'
+  );
+
+  console.log('  ✔ sanitizeMarkdown trust boundary verified across 52 hostile & regression cases');
 }
 
 function testKeyboardShortcutsAndNavigation() {
