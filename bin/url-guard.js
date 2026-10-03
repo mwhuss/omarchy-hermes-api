@@ -146,37 +146,9 @@ function sanitizeMarkdown(markdown) {
     return tokenPrefix + idx + "\uE001";
   });
 
-  // 3. Neutralize inline markdown images: ![alt](url optional_title)
-  // Images with allowed web URLs become clickable text links: [Image: alt](url).
-  // Images with dangerous/local schemes (file:, data:, etc.) become plain labels: [Image: alt].
-  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\]\((?:<([^>]+)>|([^\s\)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\)/g, function(match, alt, u1, u2) {
-    var rawUrl = (u1 || u2 || "").trim();
-    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").trim();
-    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
-    if (isAllowedWebUrl(rawUrl)) {
-      return "[" + label + "](" + rawUrl + ")";
-    }
-    return "[" + label + "]";
-  });
-
-  // 4. Neutralize reference-style images: ![alt][ref] or ![ref][]
-  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\](?:\[([\s\S]*?)\])/g, function(match, alt, ref) {
-    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").trim();
-    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
-    return "[" + label + "][" + ref + "]";
-  });
-
-  // 5. Neutralize shortcut reference images or standalone ![ref]
-  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\]/g, function(match, alt) {
-    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").trim();
-    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
-    return "[" + label + "]";
-  });
-
-  // 6. Clean up any orphaned exclamation marks directly before brackets
-  text = text.replace(/(?:\\+)?!+\s*\[/g, "[");
-
-  // 7. Strip dangerous HTML blocks: scripts, styles, svg, objects, iframes, comments, cdata, doctype
+  // 3. Strip dangerous HTML blocks: scripts, styles, svg, objects, iframes, comments, cdata, doctype, processing instructions
+  // HTML stripping runs BEFORE markdown image neutralization so intervening tags (e.g. !<span>[x](url))
+  // cannot bypass image neutralization and reconstitute live Markdown images.
   text = text.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "");
   text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
   text = text.replace(/<svg\b[^<]*(?:(?!<\/svg>)<[^<]*)*<\/svg>/gi, "");
@@ -187,7 +159,7 @@ function sanitizeMarkdown(markdown) {
   text = text.replace(/<\?[\s\S]*?\?>/g, "");
   text = text.replace(/<!DOCTYPE[^>]*>/gi, "");
 
-  // 8. Convert safe HTML <a> links to markdown links, drop dangerous hrefs
+  // 4. Convert safe HTML <a> links to markdown links, drop dangerous hrefs
   text = text.replace(/<a\b[^>]*href=["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/a>/gi, function(match, href, body) {
     var cleanHref = href.replace(/^["']|["']$/g, "").trim();
     var textBody = body.replace(/<[^>]+>/g, "").trim();
@@ -197,23 +169,63 @@ function sanitizeMarkdown(markdown) {
     return textBody;
   });
 
-  // 9. Convert safe web autolinks <https://...> to markdown links, strip other <...>
-  text = text.replace(/<((?:https?):\/\/[^\s>]+)>/gi, function(match, url) {
-    if (isAllowedWebUrl(url)) {
-      return "[" + url + "](" + url + ")";
-    }
-    return "";
-  });
+  // 5. Strip all remaining HTML/XML tags iteratively to prevent nested/malformed tag evasion
+  // Preserves web autolinks/bracketed URLs (<https://...>) for image and link resolution.
+  var prevText;
+  do {
+    prevText = text;
+    text = text.replace(/<(?!https?:\/\/)[a-zA-Z\/!?][^>]*>/g, "");
+    text = text.replace(/<(?!https?:\/\/)[a-zA-Z\/!?][^>]*$/g, "");
+  } while (text !== prevText);
 
-  // 10. Strip all remaining HTML/XML tags
-  text = text.replace(/<[a-zA-Z\/!?][^>]*>/g, "");
-  text = text.replace(/<[a-zA-Z\/!?][^>]*$/g, "");
   // Preserve separation between restored code blocks/spans and adjacent
   // code blocks or backtick/tilde runs. When intervening HTML is removed,
   // adjacent code spans must not coalesce their delimiter backticks into
   // ambiguous runs that expose previously protected Markdown syntax.
   text = text.replace(/(\uE001)(?=\uE000|[`~])/g, "$1 ");
   text = text.replace(/([`~])(?=\uE000)/g, "$1 ");
+
+  // 6. Neutralize inline markdown images: ![alt](url optional_title)
+  // Images with allowed web URLs become clickable text links: [Image: alt](url).
+  // Images with dangerous/local schemes (file:, data:, etc.) become plain labels: [Image: alt].
+  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\]\(\s*(?:<([^>]+)>|([^\s\)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/g, function(match, alt, u1, u2) {
+    var rawUrl = (u1 || u2 || "").trim();
+    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").replace(/[\[\]]/g, "").trim();
+    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
+    if (isAllowedWebUrl(rawUrl)) {
+      return "[" + label + "](" + rawUrl + ")";
+    }
+    return "[" + label + "]";
+  });
+
+  // 7. Neutralize reference-style images: ![alt][ref] or ![ref][]
+  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\](?:\[([\s\S]*?)\])/g, function(match, alt, ref) {
+    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").replace(/[\[\]]/g, "").trim();
+    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
+    return "[" + label + "][" + ref + "]";
+  });
+
+  // 8. Neutralize shortcut reference images or standalone ![ref]
+  text = text.replace(/(?:\\+)?!+\s*\[([\s\S]*?)\]/g, function(match, alt) {
+    var cleanAlt = (alt || "").replace(/[\r\n]+/g, " ").replace(/[\[\]]/g, "").trim();
+    var label = cleanAlt ? ("Image: " + cleanAlt) : "Image";
+    return "[" + label + "]";
+  });
+
+  // 9. Convert remaining safe web autolinks <https://...> to markdown links, strip other <...>
+  text = text.replace(/<((?:https?):\/\/[^\s>]+)>/gi, function(match, url) {
+    if (isAllowedWebUrl(url)) {
+      return "[" + url + "](" + url + ")";
+    }
+    return "";
+  });
+  text = text.replace(/<[^>]+>/g, "");
+
+  // 10. Clean up any orphaned exclamation marks directly before brackets
+  // Ensures later sanitization cannot leave or recreate live image syntax
+  while (/(?:\\+)?!+\s*\[/.test(text)) {
+    text = text.replace(/(?:\\+)?!+\s*\[/g, "[");
+  }
 
   // 11. Restore protected code blocks literally
   for (var i = 0; i < codeBlocks.length; i++) {

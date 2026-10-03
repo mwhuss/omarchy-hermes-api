@@ -2156,7 +2156,88 @@ function testSanitizeMarkdown() {
     'unmatched backtick across blank lines must not protect image syntax from neutralization'
   );
 
-  console.log('  ✔ sanitizeMarkdown trust boundary verified across 30 hostile & regression cases');
+  // 10. Hostile intervening HTML tags and image syntax recreation (Issue #88 / marketplace #9477 round 2)
+  // Intervening HTML tags, comments, CDATA, or malformed/nested markup between '!' and '['
+  // must never evade image neutralization or recreate live Markdown image syntax after HTML stripping.
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span>[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening span tag between ! and [ must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span></span>[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening empty span tags between ! and [ must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<<span style="">span>[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'nested/malformed intervening HTML tags must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<!-- comment -->[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening HTML comment between ! and [ must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<![CDATA[comment]]>[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening CDATA block between ! and [ must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<?xml version="1.0"?>[x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening XML processing instruction between ! and [ must not recreate live Markdown image syntax'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span>[x](file:///etc/passwd)'),
+    '[Image: x]',
+    'intervening span tag with dangerous local file scheme must neutralize to plain label'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span>[x][ref]\n\n[ref]: https://example.com/d.png'),
+    '[Image: x][ref]\n\n[ref]: https://example.com/d.png',
+    'intervening span tag on reference-style image must neutralize to reference link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span>[shortcut]'),
+    '[Image: shortcut]',
+    'intervening span tag on shortcut image must neutralize to plain label'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('! <span style="display:none"> </span> [x](https://example.com/image.png)'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening styled span with whitespace must neutralize to text link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('!<span>[x]( <https://example.com/image.png> )'),
+    '[Image: x](https://example.com/image.png)',
+    'intervening span tag with angle-bracketed destination and whitespace must neutralize to text link'
+  );
+  assert.strictEqual(
+    guard.sanitizeMarkdown('![alt with [brackets]](https://example.com/image.png)'),
+    '[Image: alt with brackets](https://example.com/image.png)',
+    'alt text with brackets must have brackets stripped so link delimiters remain valid'
+  );
+
+  // Guarantee: No live image syntax (\\*!+\\s*\\[) can exist in sanitized output
+  const hostileSet = [
+    '!<span>[x](https://example.com/image.png)',
+    '!<div>[x](https://example.com/image.png)</div>',
+    '!<p>[x](http://evil.com/leak.png)</p>',
+    '!<br>[x](https://example.com/leak.png)',
+    '!<!-- comment -->[x](https://example.com/image.png)',
+    '!<<span style="">span>[x](https://example.com/image.png)',
+    '\\!<span>[x](https://example.com/image.png)',
+    '!<span>[x][ref]',
+    '!<span>[x]'
+  ];
+  for (const hostile of hostileSet) {
+    const res = guard.sanitizeMarkdown(hostile);
+    assert(!/(?:\\+)?!+\s*\[/.test(res), `sanitized output must never contain live image syntax: ${hostile} -> ${res}`);
+  }
+
+  console.log('  ✔ sanitizeMarkdown trust boundary verified across 42 hostile & regression cases');
 }
 
 function testKeyboardShortcutsAndNavigation() {
