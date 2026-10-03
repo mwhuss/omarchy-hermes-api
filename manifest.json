@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.mwhuss.omarchy-hermes-api",
   "name": "Hermes API",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "mwhuss",
   "license": "MIT",
   "description": "Manage sessions, stream responses, and track real-time tool executions using the Hermes API from the Omarchy menu bar.",
