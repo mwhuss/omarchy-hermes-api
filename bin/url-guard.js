@@ -126,8 +126,8 @@ function sanitizeMarkdown(markdown) {
   var codeBlocks = [];
   var tokenPrefix = "\uE000CODE_" + Math.random().toString(36).slice(2) + "_";
 
-  // 1. Fenced code blocks (3+ backticks or tildes)
-  text = text.replace(/(?:^|\n)([ \t]*)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1\2[ \t]*(?=\n|$)/g, function(match) {
+  // 1. Fenced code blocks (3+ backticks or tildes, opening fence must not be backslash-escaped)
+  text = text.replace(/(?:^|\n)([ \t]*)(?<!(?<!\\)(?:\\\\)*\\)(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1\2[ \t]*(?=\n|$)/g, function(match) {
     var lead = "";
     var block = match;
     if (match.charAt(0) === "\n") {
@@ -139,8 +139,8 @@ function sanitizeMarkdown(markdown) {
     return lead + tokenPrefix + idx + "\uE001";
   });
 
-  // 2. Inline code spans (1+ backticks, no blank lines, exact matching delimiter runs)
-  text = text.replace(/(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\r?\n)[\s\S])+?)(?<!`)\1(?!`)/g, function(match) {
+  // 2. Inline code spans (1+ backticks, no blank lines, exact matching delimiter runs, opening run not backslash-escaped)
+  text = text.replace(/(?<!(?<!\\)(?:\\\\)*\\)(?<!`)(`+)(?!`)((?:(?!\n[ \t]*\r?\n)[\s\S])+?)(?<!`)\1(?!`)/g, function(match) {
     var idx = codeBlocks.length;
     codeBlocks.push(match);
     return tokenPrefix + idx + "\uE001";
