@@ -1534,18 +1534,11 @@ Panel {
 
   function sanitizePlain(str, maxLen) {
     if (!str) return ""
-    return String(str)
-      .replace(/[\x00-\x1f\x7f]/g, " ")
-      .replace(/[<>&]/g, "")
-      .trim()
-      .slice(0, maxLen || 128)
+    return UrlGuard.sanitizePlain(str, maxLen)
   }
 
   function isValidSessionId(id) {
-    if (!id || typeof id !== "string") return false
-    if (id.length > 128) return false
-    if (id.indexOf("..") !== -1 || id.indexOf("/") !== -1 || id.indexOf("\\") !== -1) return false
-    return /^[A-Za-z0-9:._-]+$/.test(id)
+    return UrlGuard.isValidSessionId(id)
   }
 
   // LRU session cache management: updates an entry and evicts the oldest
@@ -1639,7 +1632,7 @@ Panel {
     ]
     var cleanTargetId = targetId ? String(targetId).trim() : ""
     if (root.isValidSessionId(cleanTargetId)) {
-      var execArgv = ["quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
+      var execArgv = ["/usr/bin/quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
         "com.mwhuss.omarchy-hermes-api", "openSession", cleanTargetId]
       notifyArgs.push("--hint=string:omarchy-exec-argv:" + JSON.stringify(execArgv))
     }
@@ -1722,10 +1715,10 @@ Panel {
       return "ok"
     }
     function syncSession(sessionId: string): string {
-      root.refreshSessions()
       var cleanId = sessionId ? String(sessionId).trim() : ""
+      if (cleanId && !root.isValidSessionId(cleanId)) return "invalid-session-id"
+      root.refreshSessions()
       if (cleanId && root.selectedSessionId === cleanId) {
-        if (!isValidSessionId(cleanId)) return "invalid-session-id"
         if (!getSessionProc.running) {
           root.fetchActiveSession()
         }

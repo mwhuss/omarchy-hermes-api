@@ -20,6 +20,7 @@ const os = require('os');
 const crypto = require('crypto');
 const readline = require('readline');
 const { URL } = require('url');
+const { isValidSessionId, sanitizePlain } = require('./url-guard');
 
 const MAX_SETTINGS_BYTES = 65536;
 const MAX_ENV_BYTES = 32768;
@@ -52,6 +53,7 @@ function isPrivateOrLoopbackHost(hostname) {
   if (ipv4Match) {
     const octets = ipv4Match.slice(1).map(Number);
     if (octets.some(o => o < 0 || o > 255)) return false;
+    if (octets[0] === 127) return true;
     if (octets[0] === 10) return true;
     if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
     if (octets[0] === 192 && octets[1] === 168) return true;
@@ -62,7 +64,12 @@ function isPrivateOrLoopbackHost(hostname) {
 
 function parseEndpointUrl(rawUrl, defaultPort = 8642, strict = false) {
   let url = String(rawUrl || `http://127.0.0.1:${defaultPort}`).trim();
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      if (strict) throw new Error('Endpoint URL must use http or https protocol');
+      return new URL(`http://127.0.0.1:${defaultPort}`);
+    }
+  } else {
     url = `http://${url}`;
   }
   try {
@@ -744,8 +751,8 @@ function formatToolContent(raw) {
 
 async function handleGetSession(sessionId, optEndpoint, optProfile) {
   const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
-  if (!rawSessionId) {
-    console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
+  if (!rawSessionId || !isValidSessionId(rawSessionId)) {
+    console.log(JSON.stringify({ success: false, error: 'Valid session ID required' }));
     return;
   }
 
@@ -878,8 +885,8 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
 
 async function handleDeleteSession(sessionId, optEndpoint, optProfile) {
   const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
-  if (!rawSessionId) {
-    console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
+  if (!rawSessionId || !isValidSessionId(rawSessionId)) {
+    console.log(JSON.stringify({ success: false, error: 'Valid session ID required' }));
     return;
   }
 
@@ -940,6 +947,10 @@ async function handleStreamChat(options) {
   }
 
   const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, endpoint, profile);
+  if (sessionId && !isValidSessionId(rawSessionId)) {
+    process.stdout.write(JSON.stringify({ type: 'error', error: 'Invalid session ID format' }) + '\n');
+    return;
+  }
   const cfg = resolveConfig(endpointId, profileName);
 
   let resolvedSessionId = rawSessionId;
@@ -1352,8 +1363,13 @@ async function handleStreamChat(options) {
 
 async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile) {
   const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
-  if (!rawSessionId || !newTitle) {
-    console.log(JSON.stringify({ success: false, error: 'Session ID and new title required' }));
+  if (!rawSessionId || !isValidSessionId(rawSessionId) || !newTitle) {
+    console.log(JSON.stringify({ success: false, error: 'Valid session ID and new title required' }));
+    return;
+  }
+  const cleanTitle = String(newTitle).replace(/[\r\n\0]/g, '').slice(0, 200).trim();
+  if (!cleanTitle) {
+    console.log(JSON.stringify({ success: false, error: 'Valid session ID and new title required' }));
     return;
   }
 
@@ -1375,7 +1391,7 @@ async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile)
     const res = await boundedFetch(`${cfg.rootUrl}${cfg.apiPrefix}/sessions/${encodeURIComponent(rawSessionId)}`, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({ title: String(newTitle).slice(0, 200) })
+      body: JSON.stringify({ title: cleanTitle })
     }, 65536, 10000);
 
     if (!res.ok) {
@@ -1393,7 +1409,7 @@ async function handleRenameSession(sessionId, newTitle, optEndpoint, optProfile)
       raw_id: rawSessionId,
       endpoint_id: cfg.endpointId,
       profile_name: cfg.profileName,
-      title: sessionObj.title || newTitle
+      title: sessionObj.title || cleanTitle
     }));
   } catch (err) {
     console.log(JSON.stringify({ success: false, error: err.message }));
@@ -1520,9 +1536,11 @@ async function handleListTargets() {
 
 async function handleSetActiveTarget(endpointId, profileName) {
   let settings = loadSettingsFile() || { endpoints: [] };
+  const cleanEpId = typeof endpointId === 'string' ? sanitizeHeaderValue(endpointId).slice(0, 128) : 'all';
+  const cleanProf = typeof profileName === 'string' ? sanitizeHeaderValue(profileName).slice(0, 128) : 'all';
   settings.activeTarget = {
-    endpointId: endpointId || 'all',
-    profileName: profileName || 'all'
+    endpointId: cleanEpId || 'all',
+    profileName: cleanProf || 'all'
   };
 
   try {
@@ -1585,9 +1603,11 @@ async function handleGetSettings() {
 
 function sanitizeAppWindow(raw) {
   if (raw && typeof raw === 'object') {
+    const w = parseInt(raw.width, 10);
+    const h = parseInt(raw.height, 10);
     return {
-      width: Math.max(560, parseInt(raw.width, 10) || 800),
-      height: Math.max(480, parseInt(raw.height, 10) || 650)
+      width: Math.min(7680, Math.max(560, isNaN(w) ? 800 : w)),
+      height: Math.min(4320, Math.max(480, isNaN(h) ? 650 : h))
     };
   }
   return { width: 800, height: 650 };
@@ -1698,7 +1718,23 @@ async function handleSaveSettings(rawInput) {
     } catch (err) {
       console.log(JSON.stringify({
         success: false,
-        error: `Endpoint "${name}" has an invalid URL format: ${ep.url}`
+        error: `Endpoint "${name}" has an invalid URL (${err.message}): ${ep.url}`
+      }));
+      return;
+    }
+
+    if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" URL must use http or https protocol`
+      }));
+      return;
+    }
+
+    if (parsedUrl.username || parsedUrl.password) {
+      console.log(JSON.stringify({
+        success: false,
+        error: `Endpoint "${name}" URL must not contain credentials (userinfo)`
       }));
       return;
     }
@@ -1884,8 +1920,8 @@ async function handleSetAppWindowGeometry(widthStr, heightStr) {
   }
 
   await mutateSetting('appWindow', {
-    width: Math.max(560, width),
-    height: Math.max(480, height)
+    width: Math.min(7680, Math.max(560, width)),
+    height: Math.min(4320, Math.max(480, height))
   }, 'Settings file is invalid; fix or remove it before changing window geometry');
 }
 

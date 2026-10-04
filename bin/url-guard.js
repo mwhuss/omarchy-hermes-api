@@ -38,10 +38,10 @@ var MAX_URL_LENGTH = 2048;
  */
 function isAllowedWebUrl(url) {
   if (typeof url !== "string") return false;
+  // Reject control characters (C0, DEL, C1), bidi overrides, and zero-width spaces anywhere in the URL.
+  if (/[\u0000-\u001f\u007f-\u009f\u200b-\u200d\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(url)) return false;
   var u = url.trim();
   if (u.length === 0 || u.length > MAX_URL_LENGTH) return false;
-  // Reject control characters (C0, DEL, C1) anywhere in the URL.
-  if (/[\u0000-\u001f\u007f-\u009f]/.test(u)) return false;
   // Exactly http:// or https:// (case-insensitive), then a non-empty host
   // with no userinfo (@), no whitespace, no path separator, and the rest of
   // the string must be path/query/fragment only (anchored: a trailing
@@ -55,19 +55,22 @@ function isAllowedWebUrl(url) {
     if (close === -1) return false;
     if (!/^[0-9A-Fa-f:.]+$/.test(host.slice(1, close))) return false;
     var rest = host.slice(close + 1);
-    if (rest !== "" &&
-        (!/^:\d{1,5}$/.test(rest) || parseInt(rest.slice(1), 10) > 65535)) {
-      return false;
+    if (rest !== "") {
+      if (!/^:\d{1,5}$/.test(rest)) return false;
+      var portNum6 = parseInt(rest.slice(1), 10);
+      if (portNum6 < 1 || portNum6 > 65535) return false;
     }
     return true;
   }
-  // Split off an optional :port (single colon, digits only, valid range).
+  // Split off an optional :port (single colon, digits only, valid range 1-65535).
   var ci = host.lastIndexOf(":");
   if (ci !== -1) {
     if (host.indexOf(":") !== ci) return false; // second colon: not a port
     var port = host.slice(ci + 1);
     host = host.slice(0, ci);
-    if (!/^\d{1,5}$/.test(port) || parseInt(port, 10) > 65535) return false;
+    if (!/^\d{1,5}$/.test(port)) return false;
+    var portNum = parseInt(port, 10);
+    if (portNum < 1 || portNum > 65535) return false;
   }
   // Dotted domain name or IPv4 literal: each label alphanumeric, no
   // leading/trailing hyphen, 1-63 chars.
@@ -75,6 +78,17 @@ function isAllowedWebUrl(url) {
   var labels = host.split(".");
   for (var i = 0; i < labels.length; i++) {
     if (!label.test(labels[i])) return false;
+  }
+  // If the last label is all-numeric, this must be an IPv4 literal per RFC 1123
+  // (TLDs cannot be all-numeric). Strictly validate all 4 octets.
+  var isAllNumeric = labels.every(function(l) { return /^\d+$/.test(l); });
+  if (/^\d+$/.test(labels[labels.length - 1])) {
+    if (!isAllNumeric || labels.length !== 4) return false;
+    for (var j = 0; j < 4; j++) {
+      if (labels[j].length > 1 && labels[j].charAt(0) === "0") return false; // reject octal/leading zero
+      var octet = parseInt(labels[j], 10);
+      if (octet < 0 || octet > 255) return false;
+    }
   }
   return true;
 }
@@ -93,6 +107,45 @@ function openSafeUrl(url) {
     Qt.openUrlExternally(u);
   }
   // else: silently ignore (file:, data:, qrc:, javascript:, custom, relative)
+}
+
+/**
+ * Validate session identifier to prevent path traversal, control character
+ * injection, over-length input, and empty/invalid components in composite IDs.
+ *
+ * @param {*} id
+ * @returns {boolean}
+ */
+function isValidSessionId(id) {
+  if (!id || typeof id !== "string") return false;
+  var trimmed = id.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) return false;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(trimmed)) return false;
+  if (trimmed.indexOf("..") !== -1 || trimmed.indexOf("/") !== -1 || trimmed.indexOf("\\") !== -1) return false;
+  if (!/^[A-Za-z0-9:._-]+$/.test(trimmed)) return false;
+  var parts = trimmed.split(":");
+  for (var i = 0; i < parts.length; i++) {
+    if (!parts[i] || parts[i] === "." || parts[i] === "..") return false;
+  }
+  return true;
+}
+
+/**
+ * Sanitize plain text before passing to host-owned sinks (tooltips, notifications,
+ * window titles) that render with AutoText or system protocols.
+ * Strips C0, C1, DEL, bidi override controls, zero-width characters, and markup (<>&).
+ *
+ * @param {*} str
+ * @param {number} [maxLen=128]
+ * @returns {string}
+ */
+function sanitizePlain(str, maxLen) {
+  if (!str) return "";
+  return String(str)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200d\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, " ")
+    .replace(/[<>&]/g, "")
+    .trim()
+    .slice(0, maxLen || 128);
 }
 
 // Cap Markdown input to prevent memory exhaustion on oversized payloads
@@ -242,6 +295,8 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     isAllowedWebUrl: isAllowedWebUrl,
     openSafeUrl: openSafeUrl,
-    sanitizeMarkdown: sanitizeMarkdown
+    sanitizeMarkdown: sanitizeMarkdown,
+    isValidSessionId: isValidSessionId,
+    sanitizePlain: sanitizePlain
   };
 }
