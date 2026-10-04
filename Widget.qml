@@ -47,6 +47,9 @@ Panel {
   property var currentSessionTarget: ({ endpointId: "", profileName: "" })
   property bool isTargetDropdownOpen: false
   property bool isAgentPickerOpen: false
+  property bool isModelDropdownOpen: false
+  property real modelDropdownX: 300
+  property real modelDropdownY: 38
   property bool appWindowOpen: false
   property int appWindowWidth: 800
   property int appWindowHeight: 650
@@ -65,6 +68,7 @@ Panel {
   function triggerNewSession() {
     if (root.isSettingsOpen) root.isSettingsOpen = false
     root.isTargetDropdownOpen = false
+    root.isModelDropdownOpen = false
     if (root.allAgentTargets.length <= 1) {
       var defEp = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].endpointId : ""
       var defProf = root.allAgentTargets.length === 1 ? root.allAgentTargets[0].profileName : "default"
@@ -170,6 +174,7 @@ Panel {
     root.isConfirmingDeleteEndpoint = false
     root.isTargetDropdownOpen = false
     root.isAgentPickerOpen = false
+    root.isModelDropdownOpen = false
     root.settingsErrorMessage = ""
     root.settingsSuccessMessage = ""
     triggerRefresh()
@@ -405,6 +410,7 @@ Panel {
     root.hasSelectedInitialSession = true
     isEditingTitle = false
     isConfirmingDeleteSession = false
+    isModelDropdownOpen = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
     selectedSessionId = ""
@@ -432,6 +438,7 @@ Panel {
   property string selectedSessionId: ""
   property string activeSessionTitle: "New Session"
   property string currentModel: "hermes-agent"
+  property var availableModels: ["hermes-agent"]
   property string searchQuery: ""
   property bool omarchyOnly: false
   property bool hideCronSessions: false
@@ -587,6 +594,7 @@ Panel {
       root.isConfirmingDeleteEndpoint = false
       root.isTargetDropdownOpen = false
       root.isAgentPickerOpen = false
+      root.isModelDropdownOpen = false
       root.settingsErrorMessage = ""
       root.settingsSuccessMessage = ""
       triggerRefresh()
@@ -665,7 +673,10 @@ Panel {
       root.isConnected = res.connected === true
       root.serverUrl = res.baseUrl || ""
       if (res.models && res.models.length > 0) {
-        root.currentModel = res.models[0]
+        root.availableModels = res.models
+        if (!root.currentModel || root.availableModels.indexOf(root.currentModel) === -1) {
+          root.currentModel = res.models[0]
+        }
       }
       if (res.serverName && String(res.serverName).trim()) {
         root.serverName = String(res.serverName).trim()
@@ -728,6 +739,7 @@ Panel {
           if (root.sessionCache[sItem.id]) {
             var c = root.sessionCache[sItem.id]
             if (c.title && !c.title.startsWith("Session api-")) sItem.title = c.title
+            if (c.model) sItem.model = c.model
             if (c.updated_at && new Date(c.updated_at) > new Date(sItem.updated_at)) {
               sItem.updated_at = c.updated_at
             }
@@ -773,6 +785,7 @@ Panel {
   function selectSession(sessionId) {
     root.hasSelectedInitialSession = true
     var canonicalId = sessionId
+    var sessModel = ""
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].id === sessionId || sessions[i].raw_id === sessionId) {
         canonicalId = sessions[i].id
@@ -780,6 +793,9 @@ Panel {
         root.currentSessionTarget = {
           endpointId: sessions[i].endpoint_id || "",
           profileName: sessions[i].profile_name || "default"
+        }
+        if (sessions[i].model) {
+          sessModel = sessions[i].model
         }
         break
       }
@@ -791,6 +807,7 @@ Panel {
     }
     isEditingTitle = false
     isConfirmingDeleteSession = false
+    isModelDropdownOpen = false
     showSystemPromptInput = false
     sessionSystemPrompt = ""
     promptDraft = ""
@@ -815,6 +832,15 @@ Panel {
       root.touchSessionCache(sessionId)
     } else {
       root.messages = []
+    }
+
+    if (root.sessionCache[canonicalId] && root.sessionCache[canonicalId].model) {
+      sessModel = root.sessionCache[canonicalId].model
+    } else if (root.sessionCache[sessionId] && root.sessionCache[sessionId].model) {
+      sessModel = root.sessionCache[sessionId].model
+    }
+    if (sessModel) {
+      root.currentModel = sessModel
     }
 
     // Restore active in-flight stream state for this session if streaming
@@ -898,9 +924,15 @@ Panel {
               total_tokens: res.session.total_tokens
             }
           }
+          if (res.session.model) {
+            cached.model = res.session.model
+          }
           root.updateSessionCache(sid, cached)
 
           if (root.selectedSessionId === sid) {
+            if (res.session.model) {
+              root.currentModel = res.session.model
+            }
             // Only update root.messages if there is an actual difference to avoid layout churn
             if (root.areMessagesDifferent(oldMsgs, serverMsgs)) {
               root.messages = serverMsgs
@@ -913,6 +945,26 @@ Panel {
       }
     } catch (e) {
       console.warn("hermes-bridge/get-session parse error:", e)
+    }
+  }
+
+  function selectModel(modelName) {
+    if (!modelName) return
+    root.currentModel = modelName
+    root.isModelDropdownOpen = false
+    if (root.selectedSessionId) {
+      var cached = Object.assign({}, root.sessionCache[root.selectedSessionId] || {})
+      cached.model = modelName
+      root.updateSessionCache(root.selectedSessionId, cached)
+
+      var updated = root.sessions.slice()
+      for (var i = 0; i < updated.length; i++) {
+        if (updated[i].id === root.selectedSessionId || updated[i].raw_id === root.selectedSessionId) {
+          updated[i] = Object.assign({}, updated[i], { model: modelName })
+          break
+        }
+      }
+      root.sessions = updated
     }
   }
 
@@ -2677,6 +2729,7 @@ Panel {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
+                  root.isModelDropdownOpen = false
                   root.isAgentPickerOpen = false
                   root.isTargetDropdownOpen = !root.isTargetDropdownOpen
                 }
@@ -2846,6 +2899,9 @@ Panel {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
+                  root.isTargetDropdownOpen = false
+                  root.isAgentPickerOpen = false
+                  root.isModelDropdownOpen = false
                   root.isSettingsOpen = !root.isSettingsOpen
                   if (root.isSettingsOpen) {
                     root.loadSettings()
@@ -3266,6 +3322,65 @@ Panel {
                           color: sessionTokenBadge.isAlert
                             ? "#EF4444"
                             : (sessionTokenBadge.isWarning ? "#F59E0B" : root.dimText)
+                        }
+                      }
+                    }
+
+                    // Active Model display pill (clickable dropdown when availableModels.length > 1)
+                    Rectangle {
+                      id: modelPill
+                      height: 18
+                      radius: 9
+                      color: (root.availableModels.length > 1 && modelPillHover.containsMouse)
+                        ? root.cardHover
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07)
+                      border.color: root.isModelDropdownOpen
+                        ? root.accent
+                        : ((root.availableModels.length > 1 && modelPillHover.containsMouse)
+                            ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+                            : "transparent")
+                      implicitWidth: modelRow.implicitWidth + 14
+                      Layout.alignment: Qt.AlignVCenter
+
+                      MouseArea {
+                        id: modelPillHover
+                        anchors.fill: parent
+                        hoverEnabled: root.availableModels.length > 1
+                        cursorShape: root.availableModels.length > 1 ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        enabled: root.availableModels.length > 1
+                        onClicked: {
+                          root.isTargetDropdownOpen = false
+                          root.isAgentPickerOpen = false
+                          var pt = modelPill.mapToItem(chatBodyRoot, 0, modelPill.height + 4)
+                          root.modelDropdownX = pt.x + modelPill.width
+                          root.modelDropdownY = pt.y
+                          root.isModelDropdownOpen = !root.isModelDropdownOpen
+                        }
+                      }
+
+                      RowLayout {
+                        id: modelRow
+                        anchors.centerIn: parent
+                        spacing: 4
+
+                        Text {
+                          textFormat: Text.PlainText
+                          text: root.currentModel || "hermes-agent"
+                          font.family: root.fontFamily
+                          font.pixelSize: 9
+                          font.weight: Font.Medium
+                          color: root.isModelDropdownOpen ? root.accent : root.dimText
+                          elide: Text.ElideRight
+                          Layout.maximumWidth: 140
+                        }
+
+                        Text {
+                          textFormat: Text.PlainText
+                          visible: root.availableModels.length > 1
+                          text: "\uF078" // Chevron down
+                          font.family: root.fontFamily
+                          font.pixelSize: 7
+                          color: root.isModelDropdownOpen ? root.accent : root.dimText
                         }
                       }
                     }
@@ -6312,7 +6427,179 @@ Panel {
             }
           }
         }
-      }    }
+      }
+
+      // ------------------------- Model Selector Dropdown Overlay
+      Item {
+        id: modelDropdownOverlay
+        anchors.top: parent.top
+        anchors.topMargin: -49
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        z: 100
+        visible: root.isModelDropdownOpen
+
+        MouseArea {
+          anchors.fill: parent
+          onClicked: root.isModelDropdownOpen = false
+        }
+
+        Rectangle {
+          id: modelDropdownCard
+          x: Math.max(10, Math.min(parent.width - width - 10, root.modelDropdownX - width))
+          y: Math.max(38, root.modelDropdownY)
+          width: 240
+          implicitHeight: Math.min(360, modelDropdownContent.implicitHeight + 16)
+          height: implicitHeight
+          color: root.background
+          radius: 8
+          border.color: root.border
+          border.width: 1
+
+          Rectangle {
+            anchors.fill: parent
+            anchors.margins: -1
+            z: -1
+            radius: 9
+            color: "transparent"
+            border.color: Qt.rgba(0, 0, 0, 0.3)
+            border.width: 1
+          }
+
+          Flickable {
+            id: modelDropdownFlick
+            anchors.fill: parent
+            anchors.margins: 8
+            contentHeight: modelDropdownContent.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            ColumnLayout {
+              id: modelDropdownContent
+              width: modelDropdownFlick.width
+              spacing: 4
+
+              // Header
+              RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 4
+                Layout.rightMargin: 4
+                Layout.topMargin: 2
+                spacing: 6
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: "Select Model"
+                  font.family: root.fontFamily
+                  font.pixelSize: 11
+                  font.weight: Font.Bold
+                  color: root.foreground
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                  textFormat: Text.PlainText
+                  text: root.availableModels.length + (root.availableModels.length === 1 ? " model" : " models")
+                  font.family: root.fontFamily
+                  font.pixelSize: 9
+                  color: root.dimText
+                }
+              }
+
+              Rectangle {
+                Layout.fillWidth: true
+                height: 1
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.1)
+                Layout.topMargin: 2
+                Layout.bottomMargin: 4
+              }
+
+              Repeater {
+                model: root.availableModels
+
+                Rectangle {
+                  id: modelItemCard
+                  required property var modelData
+                  Layout.fillWidth: true
+                  Layout.preferredHeight: 34
+                  implicitHeight: 34
+                  height: 34
+                  radius: 6
+
+                  readonly property bool isCurrent: modelItemCard.modelData === root.currentModel
+
+                  color: modelItemCard.isCurrent
+                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.12)
+                    : (modelItemHover.containsMouse ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05) : "transparent")
+                  border.color: modelItemCard.isCurrent ? root.accent : "transparent"
+
+                  MouseArea {
+                    id: modelItemHover
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      root.selectModel(modelItemCard.modelData)
+                    }
+                  }
+
+                  RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    spacing: 8
+
+                    Rectangle {
+                      Layout.preferredWidth: 22
+                      Layout.preferredHeight: 22
+                      width: 22
+                      height: 22
+                      radius: 11
+                      color: modelItemCard.isCurrent
+                        ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.2)
+                        : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                      Layout.alignment: Qt.AlignVCenter
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        text: "\uF59C" // Brain icon
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: modelItemCard.isCurrent ? root.accent : root.dimText
+                      }
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      text: String(modelItemCard.modelData || "")
+                      font.family: root.fontFamily
+                      font.pixelSize: 11
+                      font.weight: modelItemCard.isCurrent ? Font.DemiBold : Font.Normal
+                      color: modelItemCard.isCurrent ? root.accent : root.foreground
+                      elide: Text.ElideRight
+                      Layout.fillWidth: true
+                    }
+
+                    Text {
+                      textFormat: Text.PlainText
+                      visible: modelItemCard.isCurrent
+                      text: "\uF00C" // Checkmark
+                      font.family: root.fontFamily
+                      font.pixelSize: 10
+                      color: root.accent
+                      Layout.alignment: Qt.AlignVCenter
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 
   KeyboardPanel {
@@ -6352,6 +6639,8 @@ Panel {
           root.isTargetDropdownOpen = false
         } else if (root.isAgentPickerOpen) {
           root.isAgentPickerOpen = false
+        } else if (root.isModelDropdownOpen) {
+          root.isModelDropdownOpen = false
         } else if (root.isSettingsOpen) {
           root.isSettingsOpen = false
           root.loadSettings()
@@ -6445,6 +6734,8 @@ Panel {
             root.isTargetDropdownOpen = false
           } else if (root.isAgentPickerOpen) {
             root.isAgentPickerOpen = false
+          } else if (root.isModelDropdownOpen) {
+            root.isModelDropdownOpen = false
           } else if (root.isSettingsOpen) {
             root.isSettingsOpen = false
             root.loadSettings()

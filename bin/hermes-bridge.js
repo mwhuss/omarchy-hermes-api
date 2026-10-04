@@ -865,7 +865,8 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
         updated_at: sessionObj.updated_at || sessionObj.last_active,
         input_tokens: tok.input_tokens,
         output_tokens: tok.output_tokens,
-        total_tokens: tok.total_tokens
+        total_tokens: tok.total_tokens,
+        model: sessionObj.model || 'hermes-agent'
       }
     }));
   } catch (err) {
