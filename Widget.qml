@@ -50,6 +50,21 @@ Panel {
   property bool appWindowOpen: false
   property int appWindowWidth: 800
   property int appWindowHeight: 650
+  property string toastMessage: ""
+  property bool toastVisible: false
+
+  Timer {
+    id: toastTimer
+    interval: 2000
+    repeat: false
+    onTriggered: root.toastVisible = false
+  }
+
+  function showToast(message) {
+    root.toastMessage = message || "Copied to clipboard"
+    root.toastVisible = true
+    toastTimer.restart()
+  }
   property var promptInput: null
   property var chatFlick: null
   property var sessionListView: null
@@ -958,6 +973,191 @@ Panel {
     renArgs.push("--", selectedSessionId, trimmed)
     renameSessionProc.command = renArgs
     renameSessionProc.running = true
+  }
+
+  function copyToClipboard(text) {
+    var str = String(text || "")
+    try {
+      if (typeof Quickshell !== "undefined" && "clipboardText" in Quickshell) {
+        Quickshell.clipboardText = str
+      }
+    } catch (e) {}
+    try {
+      Quickshell.execDetached(["/usr/bin/wl-copy", "--", str])
+    } catch (e) {}
+  }
+
+  function formatSessionDate(rawDate) {
+    if (!rawDate) return ""
+    try {
+      var d = new Date(rawDate)
+      if (!isNaN(d.getTime())) {
+        if (typeof Qt !== "undefined" && Qt.formatDateTime) {
+          return Qt.formatDateTime(d, "yyyy-MM-dd hh:mm AP")
+        }
+        var iso = d.toISOString()
+        return iso.slice(0, 10) + " " + iso.slice(11, 16) + " UTC"
+      }
+    } catch (e) {}
+    return String(rawDate)
+  }
+
+  function formatSessionMarkdown(sessionId) {
+    var targetId = sessionId || root.selectedSessionId
+    if (!targetId) return ""
+
+    var sItem = null
+    if (root.sessions) {
+      for (var i = 0; i < root.sessions.length; i++) {
+        if (root.sessions[i].id === targetId || root.sessions[i].raw_id === targetId) {
+          sItem = root.sessions[i]
+          break
+        }
+      }
+    }
+
+    var cached = (root.sessionCache && root.sessionCache[targetId]) || {}
+    var title = (sItem && sItem.title) || (targetId === root.selectedSessionId ? root.activeSessionTitle : "") || cached.title || "Hermes Session"
+    title = root.collapseToSingleLine(title) || "Hermes Session"
+
+    var rawDate = (sItem && (sItem.created_at || sItem.updated_at)) || cached.created_at || cached.updated_at || new Date().toISOString()
+    var dateStr = root.formatSessionDate(rawDate)
+
+    var model = (sItem && sItem.model) || cached.model || root.currentModel || root.getSessionAgentDisplayName(sItem) || "Hermes"
+
+    // Gather messages
+    var msgs = []
+    if (targetId === root.selectedSessionId && root.messages && root.messages.length > 0) {
+      msgs = root.messages.slice()
+    } else if (cached.messages && Array.isArray(cached.messages)) {
+      msgs = cached.messages.slice()
+    }
+
+    // In-flight active streaming turns
+    if (root.activeStreams && root.activeStreams[targetId]) {
+      var stream = root.activeStreams[targetId]
+      var streamingContent = stream.streamingContent || ""
+      var streamingReasoning = stream.streamingReasoning || ""
+      var streamingTools = stream.toolEvents || []
+      if (streamingContent || streamingReasoning || (streamingTools && streamingTools.length > 0)) {
+        msgs.push({
+          role: "assistant",
+          content: streamingContent,
+          reasoning: streamingReasoning || null,
+          tool_events: streamingTools.slice()
+        })
+      }
+    }
+
+    var parts = []
+    parts.push("# " + title + "\n\n- **Date:** " + dateStr + "\n- **Model:** " + model + "\n\n---")
+
+    if (msgs.length === 0) {
+      parts.push("*(No messages in this session)*")
+      return parts.join("\n\n")
+    }
+
+    for (var m = 0; m < msgs.length; m++) {
+      var msg = msgs[m]
+      if (!msg) continue
+
+      var role = msg.role || "user"
+      if (role === "session_meta") continue
+
+      if (role === "user") {
+        var uContent = String(msg.content || "").trim()
+        parts.push("### User\n\n" + (uContent || "*(empty)*"))
+      } else if (role === "assistant") {
+        var asstParts = []
+
+        // Reasoning if present
+        var reasoning = msg.reasoning ? String(msg.reasoning).trim() : ""
+        if (reasoning) {
+          var reasoningBlock = reasoning.split("\n").map(function(line) {
+            return "> " + line
+          }).join("\n")
+          asstParts.push("> **Thinking:**\n" + reasoningBlock)
+        }
+
+        // Live tool events if present
+        if (Array.isArray(msg.tool_events) && msg.tool_events.length > 0) {
+          var toolEvs = []
+          for (var t = 0; t < msg.tool_events.length; t++) {
+            var te = msg.tool_events[t]
+            if (!te) continue
+            var tName = te.tool || "tool"
+            var tLabel = te.label ? (" " + te.label) : ""
+            var tHeader = "- **Tool (" + tName + "):**" + tLabel
+            var tOut = te.output || te.detail || ""
+            if (tOut && String(tOut).trim()) {
+              tHeader += "\n  ```\n  " + String(tOut).trim().split("\n").join("\n  ") + "\n  ```"
+            }
+            toolEvs.push(tHeader)
+          }
+          if (toolEvs.length > 0) {
+            asstParts.push(toolEvs.join("\n\n"))
+          }
+        }
+
+        // Persisted tool calls if present
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+          var callEvs = []
+          for (var c = 0; c < msg.tool_calls.length; c++) {
+            var tc = msg.tool_calls[c]
+            if (!tc) continue
+            var callName = tc.name || "tool"
+            var callSummary = tc.summary ? (" - " + tc.summary) : ""
+            var callHeader = "- **Tool Call (" + callName + "):**" + callSummary
+            var callArgs = tc.arguments || ""
+            if (callArgs && String(callArgs).trim()) {
+              callHeader += "\n  ```json\n  " + String(callArgs).trim().split("\n").join("\n  ") + "\n  ```"
+            }
+            callEvs.push(callHeader)
+          }
+          if (callEvs.length > 0) {
+            asstParts.push(callEvs.join("\n\n"))
+          }
+        }
+
+        // Assistant message content
+        var aContent = String(msg.content || "").trim()
+        if (aContent) {
+          asstParts.push(aContent)
+        }
+
+        if (asstParts.length === 0) {
+          asstParts.push("*(empty)*")
+        }
+
+        parts.push("### Assistant\n\n" + asstParts.join("\n\n"))
+      } else if (role === "tool") {
+        var toolName = msg.tool_name || "tool"
+        var toolText = String(msg.tool_formatted || msg.content || "").trim()
+        var toolBlock = "### Tool (" + toolName + ")\n\n"
+        if (toolText) {
+          toolBlock += "```\n" + toolText + "\n```"
+        } else {
+          toolBlock += "*(empty)*"
+        }
+        parts.push(toolBlock)
+      } else if (role === "system") {
+        var sContent = String(msg.content || "").trim()
+        if (sContent) {
+          parts.push("### System\n\n" + sContent)
+        }
+      }
+    }
+
+    return parts.join("\n\n")
+  }
+
+  function exportSessionMarkdown(sessionId) {
+    var sid = sessionId || root.selectedSessionId
+    if (!sid) return
+    var md = root.formatSessionMarkdown(sid)
+    if (!md) return
+    root.copyToClipboard(md)
+    root.showToast("Session Markdown copied to clipboard")
   }
 
   function startNewSession() {
@@ -2450,7 +2650,7 @@ Panel {
       anchors.fill: parent
       cursorShape: Qt.PointingHandCursor
       onClicked: {
-        Quickshell.execDetached(["/usr/bin/wl-copy", "--", String(copyBtn.text || "")])
+        root.copyToClipboard(copyBtn.text)
         copyBtn.copied = true
         copyTimer.restart()
       }
@@ -3267,6 +3467,51 @@ Panel {
                             ? "#EF4444"
                             : (sessionTokenBadge.isWarning ? "#F59E0B" : root.dimText)
                         }
+                      }
+                    }
+
+                    // Export Markdown icon button
+                    Rectangle {
+                      id: exportMarkdownBtn
+                      property bool exported: false
+                      visible: !!root.selectedSessionId
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: exportHover.containsMouse ? root.cardHover : "transparent"
+
+                      Timer {
+                        id: exportTimer
+                        interval: 1500
+                        repeat: false
+                        onTriggered: exportMarkdownBtn.exported = false
+                      }
+
+                      MouseArea {
+                        id: exportHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          root.exportSessionMarkdown(root.selectedSessionId)
+                          exportMarkdownBtn.exported = true
+                          exportTimer.restart()
+                        }
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        text: exportMarkdownBtn.exported ? "\uF00C" : "\uF0C5"
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: exportMarkdownBtn.exported ? "#10B981" : (exportHover.containsMouse ? root.accent : root.dimText)
+                      }
+
+                      PanelToolTip {
+                        visible: exportHover.containsMouse && !exportMarkdownBtn.exported
+                        text: "Export Markdown"
+                        fontFamily: root.fontFamily
                       }
                     }
 
@@ -6312,7 +6557,52 @@ Panel {
             }
           }
         }
-      }    }
+      }
+
+      // Floating Toast Notification
+      Rectangle {
+        id: toastPill
+        visible: root.toastVisible && !!root.toastMessage
+        opacity: root.toastVisible ? 1.0 : 0.0
+        z: 200
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 68
+        height: 28
+        radius: 14
+        color: Qt.rgba(24/255, 24/255, 27/255, 0.95)
+        border.color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.5)
+        border.width: 1
+        implicitWidth: toastContent.implicitWidth + 24
+
+        Behavior on opacity {
+          NumberAnimation { duration: 150 }
+        }
+
+        RowLayout {
+          id: toastContent
+          anchors.centerIn: parent
+          spacing: 6
+
+          Text {
+            textFormat: Text.PlainText
+            text: "\uF00C" // Check icon
+            font.family: root.fontFamily
+            font.pixelSize: 10
+            color: "#10B981"
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            text: root.toastMessage
+            font.family: root.fontFamily
+            font.pixelSize: 11
+            font.weight: Font.Medium
+            color: "#FFFFFF"
+          }
+        }
+      }
+    }
   }
 
   KeyboardPanel {

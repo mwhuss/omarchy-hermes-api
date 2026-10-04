@@ -2425,6 +2425,114 @@ function testKeyboardShortcutsAndNavigation() {
   console.log('  ✔ keyboard navigation shortcuts and sidebar drawer verified');
 }
 
+function testFormatSessionMarkdown() {
+  console.log('Testing: formatSessionMarkdown (Issue #64)...');
+  const vm = require('vm');
+  const qmlPath = path.join(__dirname, '..', 'Widget.qml');
+  const qml = fs.readFileSync(qmlPath, 'utf8');
+
+  const matchDate = qml.match(/function formatSessionDate\([\s\S]*?\n  \}/);
+  assert(matchDate, 'formatSessionDate must exist in Widget.qml');
+
+  const matchMd = qml.match(/function formatSessionMarkdown\([\s\S]*?\n  \}/);
+  assert(matchMd, 'formatSessionMarkdown must exist in Widget.qml');
+
+  const sandbox = {
+    root: {
+      selectedSessionId: 'test-session-1',
+      activeSessionTitle: 'Active Test Session',
+      currentModel: 'hermes-3-llama-8b',
+      sessions: [
+        {
+          id: 'test-session-1',
+          title: 'Active Test Session',
+          model: 'hermes-3-llama-8b',
+          created_at: '2026-09-28T12:00:00.000Z'
+        }
+      ],
+      sessionCache: {
+        'test-session-1': {
+          messages: [
+            { role: 'user', content: 'What files are in this repo?' },
+            {
+              role: 'assistant',
+              content: 'There are several files in this repository.',
+              reasoning: 'Need to inspect repository structure.\nListing root directory.',
+              tool_events: [
+                { tool: 'bash', label: 'ls -la', output: 'package.json\nWidget.qml' }
+              ],
+              tool_calls: [
+                { name: 'list_files', summary: 'listing files', arguments: '{"dir":"."}' }
+              ]
+            },
+            { role: 'tool', tool_name: 'list_files', tool_formatted: 'package.json\nWidget.qml' },
+            { role: 'session_meta', content: null }
+          ]
+        },
+        'empty-session': {
+          title: 'Empty Test Session',
+          model: 'hermes-3-llama-8b',
+          created_at: '2026-09-28T12:00:00.000Z',
+          messages: []
+        }
+      },
+      messages: [],
+      activeStreams: {
+        'test-session-1': {
+          streamingContent: 'Also found README.md.',
+          streamingReasoning: 'Checking documentation files.',
+          toolEvents: [{ tool: 'bash', label: 'find . -name "*.md"' }]
+        }
+      },
+      collapseToSingleLine: (r) => String(r || '').replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim(),
+      getSessionAgentDisplayName: () => 'Hermes',
+      formatSessionDate: null,
+      formatSessionMarkdown: null
+    }
+  };
+
+  vm.createContext(sandbox);
+  vm.runInContext(matchDate[0] + '; root.formatSessionDate = formatSessionDate;', sandbox);
+  vm.runInContext(matchMd[0] + '; root.formatSessionMarkdown = formatSessionMarkdown;', sandbox);
+
+  const md = sandbox.root.formatSessionMarkdown('test-session-1');
+
+  // 1. Header with title, date, model
+  assert(md.includes('# Active Test Session'), 'Must contain session title in H1');
+  assert(md.includes('- **Date:** 2026-09-28 12:00 UTC'), 'Must contain formatted date');
+  assert(md.includes('- **Model:** hermes-3-llama-8b'), 'Must contain model');
+  assert(md.includes('---'), 'Must contain separator after header');
+
+  // 2. User turn with ### User
+  assert(md.includes('### User\n\nWhat files are in this repo?'), 'Must format user turns with ### User');
+
+  // 3. Assistant turn with ### Assistant, reasoning, tool events, tool calls
+  assert(md.includes('### Assistant'), 'Must format assistant turns with ### Assistant');
+  assert(md.includes('> **Thinking:**\n> Need to inspect repository structure.\n> Listing root directory.'),
+    'Must format reasoning trace under blockquote');
+  assert(md.includes('- **Tool (bash):** ls -la'), 'Must format tool events');
+  assert(md.includes('package.json\n  Widget.qml'), 'Must format tool event output in code block');
+  assert(md.includes('- **Tool Call (list_files):** - listing files'), 'Must format persisted tool calls');
+  assert(md.includes('There are several files in this repository.'), 'Must format assistant message content');
+
+  // 4. Standalone tool turn
+  assert(md.includes('### Tool (list_files)'), 'Must format tool result messages');
+
+  // 5. In-flight active streaming turn included
+  assert(md.includes('Checking documentation files.'), 'Must include in-flight streaming reasoning');
+  assert(md.includes('Also found README.md.'), 'Must include in-flight streaming content');
+
+  // 6. Non-chat metadata excluded
+  assert(!md.includes('session_meta'), 'Must exclude session_meta messages');
+
+  // 7. Empty session
+  const emptyMd = sandbox.root.formatSessionMarkdown('empty-session');
+  assert(emptyMd.includes('# Empty Test Session'), 'Must format empty session title');
+  assert(emptyMd.includes('*(No messages in this session)*'), 'Must indicate no messages for empty session');
+
+  console.log('  ✔ formatSessionMarkdown verified across all turns, reasoning, tools, and edge cases');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -2457,6 +2565,7 @@ async function runAllTests() {
     testWidgetScrollToBottom();
     testUrlGuard();
     testSanitizeMarkdown();
+    testFormatSessionMarkdown();
     testFastPollAndMessageComparison();
     testCloseSettingsOnSave();
     await testSettings();
