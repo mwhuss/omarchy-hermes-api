@@ -212,12 +212,8 @@ async function readBoundedBody(res, maxBytes) {
   }
 }
 
-async function readBoundedText(res, maxBytes = 32768) {
-  if (!res || !res.body) {
-    res?.boundedRelease?.();
-    return '';
-  }
-  const cl = res.headers?.get ? res.headers.get('content-length') : null;
+function validateContentLength(res, maxBytes) {
+  const cl = res?.headers?.get ? res.headers.get('content-length') : null;
   if (cl !== null && cl !== undefined) {
     if (!/^\d+$/.test(cl)) {
       res.boundedRelease?.();
@@ -228,6 +224,14 @@ async function readBoundedText(res, maxBytes = 32768) {
       throw new Error(`Content-Length ${cl} exceeds ${maxBytes} byte limit`);
     }
   }
+}
+
+async function readBoundedText(res, maxBytes = 32768) {
+  if (!res || !res.body) {
+    res?.boundedRelease?.();
+    return '';
+  }
+  validateContentLength(res, maxBytes);
   return await readBoundedBody(res, maxBytes);
 }
 
@@ -236,17 +240,7 @@ async function readBoundedJson(res, maxBytes = MAX_FETCH_BYTES) {
     res?.boundedRelease?.();
     return {};
   }
-  const cl = res.headers.get('content-length');
-  if (cl !== null) {
-    if (!/^\d+$/.test(cl)) {
-      res.boundedRelease?.();
-      throw new Error('Invalid Content-Length header');
-    }
-    if (Number(cl) > maxBytes) {
-      res.boundedRelease?.();
-      throw new Error(`Content-Length ${cl} exceeds ${maxBytes} byte limit`);
-    }
-  }
+  validateContentLength(res, maxBytes);
   if (!res.body) {
     res.boundedRelease?.();
     return {};
@@ -259,30 +253,28 @@ async function readBoundedJson(res, maxBytes = MAX_FETCH_BYTES) {
   }
 }
 
-function loadHermesEnvFile() {
-  const envPath = path.join(os.homedir(), '.hermes', '.env');
+function parseEnvContent(content) {
   const vars = {};
-  const content = readBoundedFile(envPath, MAX_ENV_BYTES);
-  if (content) {
-    try {
-      content.split('\n').forEach(line => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) return;
-        const eqIdx = trimmed.indexOf('=');
-        if (eqIdx !== -1) {
-          const key = trimmed.slice(0, eqIdx).trim();
-          let val = trimmed.slice(eqIdx + 1).trim();
-          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-          }
-          vars[key] = val;
-        }
-      });
-    } catch (e) {
-      // Ignore parsing errors
+  if (!content) return vars;
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx !== -1) {
+      const key = trimmed.slice(0, eqIdx).trim();
+      let val = trimmed.slice(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      vars[key] = val;
     }
   }
   return vars;
+}
+
+function loadHermesEnvFile() {
+  const envPath = path.join(os.homedir(), '.hermes', '.env');
+  return parseEnvContent(readBoundedFile(envPath, MAX_ENV_BYTES));
 }
 
 function getSettingsPath() {
@@ -316,29 +308,9 @@ function discoverLocalHermesProfiles() {
         const profName = entry.name;
         if (!/^[A-Za-z0-9._-]+$/.test(profName) || profName === '.' || profName === '..') continue;
         if (profName.toLowerCase() === 'default') continue;
-        let apiKey = '';
         const envPath = path.join(profilesDir, profName, '.env');
-        const content = readBoundedFile(envPath, MAX_ENV_BYTES);
-        if (content) {
-          try {
-            content.split('\n').forEach(line => {
-              const trimmed = line.trim();
-              if (!trimmed || trimmed.startsWith('#')) return;
-              const eqIdx = trimmed.indexOf('=');
-              if (eqIdx !== -1) {
-                const k = trimmed.slice(0, eqIdx).trim();
-                let v = trimmed.slice(eqIdx + 1).trim();
-                if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-                  v = v.slice(1, -1);
-                }
-                if (k === 'API_SERVER_KEY') {
-                  apiKey = v;
-                }
-              }
-            });
-          } catch (e) {}
-        }
-        discovered.push({ name: profName, apiKey });
+        const envVars = parseEnvContent(readBoundedFile(envPath, MAX_ENV_BYTES));
+        discovered.push({ name: profName, apiKey: envVars.API_SERVER_KEY || '' });
       }
     }
   } catch (e) {}
@@ -459,27 +431,9 @@ function resolveConfig(targetEndpointId, targetProfileName) {
   }
 
   const isDefaultProfile = !resolvedProfile || resolvedProfile.toLowerCase() === 'default';
+  let finalApiKey = endpointApiKey;
 
-  if (isDefaultProfile) {
-    if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname) && endpointApiKey) {
-      throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
-    }
-    return {
-      id: endpointId,
-      endpointId,
-      endpointName,
-      profileName: 'default',
-      isDefault: true,
-      url: rootUrl,
-      rootUrl,
-      baseUrl: `${rootUrl}/v1`,
-      apiPrefix: '/api',
-      port: parseInt(parsedUrl.port || defaultPort, 10),
-      apiKey: endpointApiKey,
-      serverName: endpointName
-    };
-  } else {
-    // Custom profile
+  if (!isDefaultProfile) {
     let profApiKey = '';
     if (targetEndpoint && Array.isArray(targetEndpoint.profiles)) {
       const found = targetEndpoint.profiles.find(p => {
@@ -496,28 +450,28 @@ function resolveConfig(targetEndpointId, targetProfileName) {
       const d = discovered.find(p => p.name.toLowerCase() === resolvedProfile.toLowerCase());
       if (d && d.apiKey) profApiKey = sanitizeHeaderValue(d.apiKey);
     }
-
-    const finalApiKey = profApiKey || endpointApiKey;
-    if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname) && finalApiKey) {
-      throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
-    }
-    const encProf = encodeURIComponent(resolvedProfile);
-
-    return {
-      id: endpointId,
-      endpointId,
-      endpointName,
-      profileName: resolvedProfile,
-      isDefault: false,
-      url: rootUrl,
-      rootUrl,
-      baseUrl: `${rootUrl}/p/${encProf}/v1`,
-      apiPrefix: `/p/${encProf}/api`,
-      port: parseInt(parsedUrl.port || defaultPort, 10),
-      apiKey: finalApiKey,
-      serverName: `${endpointName} (${resolvedProfile})`
-    };
+    if (profApiKey) finalApiKey = profApiKey;
   }
+
+  if (parsedUrl.protocol === 'http:' && !isPrivateOrLoopbackHost(parsedUrl.hostname) && finalApiKey) {
+    throw new Error(`Insecure transport: refusing to send API credentials over unencrypted HTTP to remote host '${parsedUrl.hostname}'. Use HTTPS.`);
+  }
+
+  const encProf = encodeURIComponent(resolvedProfile);
+  return {
+    id: endpointId,
+    endpointId,
+    endpointName,
+    profileName: isDefaultProfile ? 'default' : resolvedProfile,
+    isDefault: isDefaultProfile,
+    url: rootUrl,
+    rootUrl,
+    baseUrl: isDefaultProfile ? `${rootUrl}/v1` : `${rootUrl}/p/${encProf}/v1`,
+    apiPrefix: isDefaultProfile ? '/api' : `/p/${encProf}/api`,
+    port: parseInt(parsedUrl.port || defaultPort, 10),
+    apiKey: finalApiKey,
+    serverName: isDefaultProfile ? endpointName : `${endpointName} (${resolvedProfile})`
+  };
 }
 
 async function handleStatus(targetEndpointId, targetProfileName) {
@@ -1594,28 +1548,25 @@ function sanitizeAppWindow(raw) {
 }
 
 function buildSeededSettings() {
-  // Seed default settings from active environment / ~/.hermes/.env
-  const hermesEnv = loadHermesEnvFile();
-  const defaultPort = parseInt(process.env.HERMES_API_SERVER_PORT || hermesEnv.API_SERVER_PORT || hermesEnv.PORT || '8642', 10) || 8642;
-  const defaultUrl = parseEndpointUrl(process.env.HERMES_API_SERVER_URL || hermesEnv.API_SERVER_URL, defaultPort).origin;
-  const defaultKey = process.env.HERMES_API_SERVER_KEY || hermesEnv.API_SERVER_KEY || '';
-  const defaultName = process.env.HERMES_API_SERVER_NAME || hermesEnv.HERMES_API_SERVER_NAME || 'Local Hermes';
-
   return {
     activeTarget: { endpointId: 'all', profileName: 'all' },
     hideCronSessions: false,
     appWindow: { width: 800, height: 650 },
-    endpoints: [
-      {
-        id: 'endpoint-default',
-        name: defaultName,
-        url: defaultUrl,
-        port: isNaN(defaultPort) ? 8642 : defaultPort,
-        apiKey: defaultKey,
-        profiles: []
-      }
-    ]
+    endpoints: [getDefaultEndpoint()]
   };
+}
+
+function parseContextWindow(val, errPrefix) {
+  if (val === undefined || val === null || val === '') return { ok: true, val: null };
+  const cw = parseInt(val, 10);
+  if (isNaN(cw) || cw < 1) {
+    console.log(JSON.stringify({
+      success: false,
+      error: `${errPrefix} context window must be a positive integer (got ${val})`
+    }));
+    return { ok: false };
+  }
+  return { ok: true, val: cw };
 }
 
 async function handleSaveSettings(rawInput) {
@@ -1731,19 +1682,6 @@ async function handleSaveSettings(rawInput) {
       : `endpoint-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
     const apiKey = typeof ep.apiKey === 'string' ? sanitizeHeaderValue(ep.apiKey) : '';
-
-    function parseContextWindow(val, errPrefix) {
-      if (val === undefined || val === null || val === '') return { ok: true, val: null };
-      const cw = parseInt(val, 10);
-      if (isNaN(cw) || cw < 1) {
-        console.log(JSON.stringify({
-          success: false,
-          error: `${errPrefix} context window must be a positive integer (got ${val})`
-        }));
-        return { ok: false };
-      }
-      return { ok: true, val: cw };
-    }
 
     const epCw = parseContextWindow(ep.contextWindow, `Endpoint "${name}"`);
     if (!epCw.ok) return;
