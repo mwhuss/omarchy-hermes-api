@@ -289,30 +289,25 @@ Panel {
   }
 
   function getSessionTarget(sessionId) {
-    if (!sessionId) {
-      return {
-        endpointId: (root.currentSessionTarget && root.currentSessionTarget.endpointId) || "",
-        endpointName: getEndpointDisplayName((root.currentSessionTarget && root.currentSessionTarget.endpointId) || ""),
-        profileName: (root.currentSessionTarget && root.currentSessionTarget.profileName) || "default"
-      }
-    }
-    for (var i = 0; i < root.sessions.length; i++) {
-      var s = root.sessions[i]
-      if (s.id === sessionId) {
-        return {
-          endpointId: s.endpoint_id || "",
-          endpointName: s.endpoint_name || getEndpointDisplayName(s.endpoint_id),
-          profileName: s.profile_name || "default"
+    if (sessionId) {
+      for (var i = 0; i < root.sessions.length; i++) {
+        var s = root.sessions[i]
+        if (s.id === sessionId) {
+          return {
+            endpointId: s.endpoint_id || "",
+            endpointName: s.endpoint_name || getEndpointDisplayName(s.endpoint_id),
+            profileName: s.profile_name || "default"
+          }
         }
       }
-    }
-    if (sessionId.indexOf(":") !== -1) {
-      var parts = sessionId.split(":")
-      if (parts.length >= 3) {
-        return {
-          endpointId: parts[0],
-          endpointName: getEndpointDisplayName(parts[0]),
-          profileName: parts[1] || "default"
+      if (sessionId.indexOf(":") !== -1) {
+        var parts = sessionId.split(":")
+        if (parts.length >= 3) {
+          return {
+            endpointId: parts[0],
+            endpointName: getEndpointDisplayName(parts[0]),
+            profileName: parts[1] || "default"
+          }
         }
       }
     }
@@ -354,14 +349,10 @@ Panel {
   }
 
   function activeTargetStatusColor() {
-    if (!root.activeTarget || root.activeTarget.endpointId === "all" || !root.activeTarget.endpointId) {
-      return root.isConnected ? "#10B981" : "#EF4444"
-    }
-    for (var i = 0; i < root.allAgentTargets.length; i++) {
-      var t = root.allAgentTargets[i]
-      if (t.endpointId === root.activeTarget.endpointId) {
-        return t.connected ? "#10B981" : "#EF4444"
-      }
+    var epId = root.activeTarget ? root.activeTarget.endpointId : ""
+    if (epId && epId !== "all") {
+      var t = root.allAgentTargets.find(function(x) { return x.endpointId === epId })
+      if (t) return t.connected ? "#10B981" : "#EF4444"
     }
     return root.isConnected ? "#10B981" : "#EF4444"
   }
@@ -1446,10 +1437,6 @@ Panel {
     return (count / 1000000).toFixed(1).replace(/\.0$/, "") + "M"
   }
 
-  function formatTokens(count) {
-    if (typeof count !== "number" || isNaN(count) || count <= 0) return ""
-    return formatTokenCount(count) + " tokens"
-  }
 
   function getSessionContextCeiling(sessionId) {
     var sid = sessionId || root.selectedSessionId
@@ -1674,24 +1661,24 @@ Panel {
     }
 
     var title = isError ? (targetTitle + " - Error") : targetTitle
-    var preview = root.sanitizePlain(String(content || "").replace(/[`*_~>#]/g, "").replace(/\s+/g, " "), 140)
+    var preview = UrlGuard.sanitizePlain(String(content || "").replace(/[`*_~>#]/g, "").replace(/\s+/g, " "), 140)
     if (!preview) {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
     var notifyArgs = [
       "/usr/bin/notify-send",
-      "-a", root.sanitizePlain(root.serverName, 40) || "Hermes",
+      "-a", UrlGuard.sanitizePlain(root.serverName, 40) || "Hermes",
       "-u", isError ? "critical" : "normal"
     ]
     var cleanTargetId = targetId ? String(targetId).trim() : ""
-    if (root.isValidSessionId(cleanTargetId)) {
+    if (UrlGuard.isValidSessionId(cleanTargetId)) {
       var execArgv = ["/usr/bin/quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
         "com.mwhuss.omarchy-hermes-api", "openSession", cleanTargetId]
       notifyArgs.push("--hint=string:omarchy-exec-argv:" + JSON.stringify(execArgv))
     }
     notifyArgs.push("--")
-    notifyArgs.push(root.sanitizePlain(title, 80))
+    notifyArgs.push(UrlGuard.sanitizePlain(title, 80))
     notifyArgs.push(preview)
     Quickshell.execDetached(notifyArgs)
   }
@@ -1751,7 +1738,7 @@ Panel {
       root.isSettingsOpen = false
       if (sessionId && String(sessionId).trim() !== "") {
         var cleanId = String(sessionId).trim()
-        if (!root.isValidSessionId(cleanId)) return "invalid-session-id"
+        if (!UrlGuard.isValidSessionId(cleanId)) return "invalid-session-id"
         root.searchQuery = ""
         for (var s = 0; s < root.sessions.length; s++) {
           if (root.sessions[s].id === cleanId || root.sessions[s].raw_id === cleanId) {
@@ -2609,7 +2596,7 @@ Panel {
       }
     }
 
-    return root.sanitizePlain(lines.join("\n"), 256)
+    return UrlGuard.sanitizePlain(lines.join("\n"), 256)
   }
 
   // ------------------------------------------------------------- Bar Button
@@ -3305,7 +3292,7 @@ Panel {
                             lines.push("Session Cumulative: " + root.formatTokenCount(tokenUsage.cumulative.total_tokens) + " total (" + sin + " in / " + sout + " out)")
                           }
                         }
-                        return root.sanitizePlain(lines.join("\n"), 256)
+                        return UrlGuard.sanitizePlain(lines.join("\n"), 256)
                       }
 
                       MouseArea {
@@ -4250,7 +4237,7 @@ Panel {
                             textFormat: Text.PlainText
                             id: msgTokenBadgeText
                             anchors.centerIn: parent
-                            text: root.formatTokens(msgTokenBadge.tokens)
+                            text: root.formatTokenCount(msgTokenBadge.tokens) + " tokens"
                             font.family: root.fontFamily
                             font.pixelSize: 8
                             font.weight: Font.Medium
