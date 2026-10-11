@@ -47,7 +47,11 @@ function startMockServer() {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           object: 'list',
-          data: [{ id: 'hermes-agent', object: 'model' }]
+          data: [
+            { id: 'hermes-agent', object: 'model' },
+            { id: 'meta-llama/Llama-3-70b', object: 'model' },
+            { id: 'qwen-2.5-72b', object: 'model' }
+          ]
         }));
         return;
       }
@@ -57,6 +61,8 @@ function startMockServer() {
         let body = '';
         req.on('data', chunk => { body += chunk; });
         req.on('end', () => {
+          let parsedBody = {};
+          try { parsedBody = JSON.parse(body); } catch (e) {}
           const sid = req.headers['x-hermes-session-id'];
           if (sid && !mockSessions.has(sid)) {
             mockSessions.set(sid, {
@@ -64,7 +70,8 @@ function startMockServer() {
               title: `Session ${sid}`,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
-              message_count: 1
+              message_count: 1,
+              model: parsedBody.model || 'hermes-agent'
             });
           }
           res.writeHead(200, {
@@ -211,7 +218,11 @@ async function testStatus() {
   const json = JSON.parse(res.stdout);
   assert(typeof json.success === 'boolean', 'json.success should be boolean');
   assert(typeof json.connected === 'boolean', 'json.connected should be boolean');
-  console.log('  ✔ status check passed (connected:', json.connected, ')');
+  assert(Array.isArray(json.models), 'json.models should be an array');
+  assert(json.models.length >= 3, 'json.models should include all available models');
+  assert(json.models.includes('hermes-agent'), 'json.models should include hermes-agent');
+  assert(json.models.includes('meta-llama/Llama-3-70b'), 'json.models should include meta-llama/Llama-3-70b');
+  console.log('  ✔ status check passed (connected:', json.connected, ', models:', json.models.length, ')');
 }
 
 async function testListSessions() {
@@ -276,6 +287,9 @@ async function testStreamChat() {
 
   assert(types.includes('start'), 'Should have a start event');
   assert(types.includes('done') || types.includes('error'), 'Should finish with done or error event');
+  const startEvent = events.find(e => e.type === 'start');
+  assert(startEvent, 'Should find start event');
+  assert.strictEqual(startEvent.model, 'hermes-agent', 'default model should be hermes-agent');
   const doneEvent = events.find(e => e.type === 'done');
   assert(doneEvent, 'Should have a done event');
   assert(doneEvent.usage, 'done event should contain usage object');
@@ -284,9 +298,21 @@ async function testStreamChat() {
   assert.strictEqual(doneEvent.usage.total_tokens, 37, 'total_tokens should match');
   console.log('  ✔ stream-chat passed with events:', types.filter((v, i, a) => a.indexOf(v) === i).join(', '));
 
+  console.log('Testing: stream-chat with explicit --model flag...');
+  const modelFlagRes = await runBridge(['stream-chat', '--model', 'meta-llama/Llama-3-70b', '--prompt', 'Respond with "MODEL_OK" only.']);
+  assert.strictEqual(modelFlagRes.code, 0, `Exit code should be 0, got ${modelFlagRes.code}`);
+  trackCreatedSessionFromStdout(modelFlagRes.stdout);
+  const modelFlagLines = modelFlagRes.stdout.trim().split('\n');
+  const modelFlagEvents = modelFlagLines.map(l => JSON.parse(l));
+  const modelStartEvent = modelFlagEvents.find(e => e.type === 'start');
+  assert(modelStartEvent, 'Should have a start event');
+  assert.strictEqual(modelStartEvent.model, 'meta-llama/Llama-3-70b', 'start event should reflect explicit --model');
+  console.log('  ✔ stream-chat with --model flag passed');
+
   console.log('Testing: stream-chat with --json-input stdin pipeline...');
   const jsonInputRes = await runBridge(['stream-chat', '--json-input'], JSON.stringify({
-    prompt: 'Respond with "JSON_INPUT_OK" only.'
+    prompt: 'Respond with "JSON_INPUT_OK" only.',
+    model: 'qwen-2.5-72b'
   }) + '\n');
   assert.strictEqual(jsonInputRes.code, 0, `Exit code should be 0, got ${jsonInputRes.code}`);
   trackCreatedSessionFromStdout(jsonInputRes.stdout);
@@ -295,6 +321,8 @@ async function testStreamChat() {
   const jsonEvents = jsonInputLines.map(l => JSON.parse(l));
   const jsonTypes = jsonEvents.map(e => e.type);
   assert(jsonTypes.includes('start'), 'Should have start event');
+  const jsonStartEvent = jsonEvents.find(e => e.type === 'start');
+  assert.strictEqual(jsonStartEvent.model, 'qwen-2.5-72b', 'start event should reflect model from json-input');
   assert(jsonTypes.includes('done') || jsonTypes.includes('error'), 'Should finish with done or error event');
   console.log('  ✔ stream-chat --json-input pipeline passed');
 }
@@ -310,6 +338,7 @@ async function testGetSession() {
     const json = JSON.parse(res.stdout);
     assert.strictEqual(json.success, true, 'json.success should be true');
     assert(json.session, 'json.session must exist');
+    assert(typeof json.session.model === 'string', 'session should include model property');
     assert(Array.isArray(json.session.messages), 'json.session.messages must be an array');
 
     // Reasoning pass-through: assistant message carries reasoning, user message is null
