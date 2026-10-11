@@ -2558,6 +2558,162 @@ function testKeyboardShortcutsAndNavigation() {
   console.log('  ✔ keyboard navigation shortcuts and sidebar drawer verified');
 }
 
+async function testContextWindowTokenBadgeIssue92() {
+  console.log('Testing: context window token badge active prompt context vs cumulative tokens (#92)...');
+  const widgetPath = path.join(__dirname, '..', 'Widget.qml');
+  const widgetContent = fs.readFileSync(widgetPath, 'utf8');
+
+  // Verify braces balance
+  const openBraces = (widgetContent.match(/\{/g) || []).length;
+  const closeBraces = (widgetContent.match(/\}/g) || []).length;
+  assert.strictEqual(openBraces, closeBraces, 'Widget.qml must have balanced braces');
+
+  // 1. Structural contracts in Widget.qml
+  assert.ok(
+    widgetContent.includes('cached.cumulative_tokens = {'),
+    'Widget.qml getSessionProc must store cumulative_tokens'
+  );
+  assert.ok(
+    !widgetContent.includes('cached.last_usage = {\n              prompt_tokens: res.session.input_tokens'),
+    'Widget.qml getSessionProc must NOT overwrite last_usage with session lifetime totals'
+  );
+  assert.ok(
+    widgetContent.includes('function estimateMessagesContextTokens(msgs)'),
+    'Widget.qml must define estimateMessagesContextTokens function'
+  );
+  assert.ok(
+    widgetContent.includes('isCumulativeOnly: !!(tokenUsage && tokenUsage.is_cumulative_only)'),
+    'sessionTokenBadge must declare isCumulativeOnly property'
+  );
+  assert.ok(
+    widgetContent.includes('isEstimated: !!(tokenUsage && tokenUsage.is_estimated)'),
+    'sessionTokenBadge must declare isEstimated property'
+  );
+  assert.ok(
+    widgetContent.includes('hasCeiling: contextCeiling > 0 && !isCumulativeOnly'),
+    'sessionTokenBadge hasCeiling must exclude cumulative-only tokens'
+  );
+  assert.ok(
+    widgetContent.includes('function getTooltipText()'),
+    'sessionTokenBadge must define getTooltipText function'
+  );
+  assert.ok(
+    widgetContent.includes('PanelToolTip {'),
+    'sessionTokenBadge must include PanelToolTip'
+  );
+  assert.ok(
+    widgetContent.includes('id: tokenBadgeHover'),
+    'sessionTokenBadge must include hover MouseArea for tooltip'
+  );
+
+  // 2. Behavioral verification of active context estimation heuristic
+  function estimateMessagesContextTokens(msgs) {
+    if (!Array.isArray(msgs) || msgs.length === 0) return 0;
+    let totalChars = 0;
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (!m) continue;
+      totalChars += 16 + (m.content ? m.content.length : 0) + (m.reasoning ? m.reasoning.length : 0);
+      if (Array.isArray(m.tool_calls)) {
+        for (let tc = 0; tc < m.tool_calls.length; tc++) {
+          const call = m.tool_calls[tc];
+          if (call) totalChars += (call.name ? call.name.length : 0) + (call.arguments ? call.arguments.length : 0);
+        }
+      }
+    }
+    return Math.max(1, Math.round(totalChars / 3.8));
+  }
+
+  // Reproduce Issue 92 Manim 3b1b dataset (LunaBot api-muuc0kh5-augf)
+  // 98 messages, session cumulative: 343,745 tokens, context window ceiling: 98,304 tokens
+  const mockMessages = [];
+  for (let i = 0; i < 98; i++) {
+    mockMessages.push({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `Message ${i}: This is conversation turn content discussing Manim 3b1b data temperature calculations.`,
+      tool_calls: i % 3 === 0 ? [{ name: 'python_exec', arguments: '{"code": "import numpy as np; print(2+2)"}' }] : []
+    });
+  }
+
+  const estimatedContextTokens = estimateMessagesContextTokens(mockMessages);
+  assert.ok(estimatedContextTokens > 1000 && estimatedContextTokens < 30000,
+    `Estimated active context (${estimatedContextTokens}) should reflect message history, not 343k cumulative total`);
+
+  const contextCeiling = 98304;
+  const percentUsed = Math.min(100, Math.round((estimatedContextTokens / contextCeiling) * 100));
+  assert.ok(percentUsed < 30, `Active context percent (${percentUsed}%) must not pin meter to 100%`);
+  const isAlert = percentUsed >= 90;
+  const isWarning = percentUsed >= 70;
+  assert.strictEqual(isAlert, false, 'isAlert must be false for normal active context size');
+  assert.strictEqual(isWarning, false, 'isWarning must be false for normal active context size');
+
+  // 3. Behavioral simulation of getSessionTokenUsage
+  function simulateGetSessionTokenUsage(cached, matchedItem) {
+    const cumulative = (cached && cached.cumulative_tokens)
+      || (cached && cached.total_tokens ? { input_tokens: 0, output_tokens: 0, total_tokens: cached.total_tokens } : null)
+      || (matchedItem && matchedItem.total_tokens ? { input_tokens: matchedItem.input_tokens || 0, output_tokens: matchedItem.output_tokens || 0, total_tokens: matchedItem.total_tokens } : null);
+
+    const activeUsage = (cached && cached.last_usage) || (cached && (cached.messages || []).slice().reverse().find(m => m && m.usage)?.usage);
+    if (activeUsage) {
+      const pt = activeUsage.prompt_tokens || 0, ct = activeUsage.completion_tokens || 0, tt = activeUsage.total_tokens || (pt + ct);
+      return { prompt_tokens: pt, completion_tokens: ct, total_tokens: tt, active_tokens: (pt > 0 && ct > 0) ? (pt + ct) : (pt || tt || 0), is_estimated: false, is_cumulative_only: false, cumulative };
+    }
+
+    const est = (cached && cached.messages) ? estimateMessagesContextTokens(cached.messages) : 0;
+    if (est > 0) {
+      return { prompt_tokens: est, completion_tokens: 0, total_tokens: est, active_tokens: est, is_estimated: true, is_cumulative_only: false, cumulative };
+    }
+
+    if (cumulative && cumulative.total_tokens > 0) {
+      return { prompt_tokens: 0, completion_tokens: 0, total_tokens: cumulative.total_tokens, active_tokens: 0, is_estimated: false, is_cumulative_only: true, cumulative };
+    }
+    return null;
+  }
+
+  // Test live SSE stream completion turn
+  const liveUsageResult = simulateGetSessionTokenUsage({
+    last_usage: { prompt_tokens: 14800, completion_tokens: 430, total_tokens: 15230 },
+    total_tokens: 343745,
+    cumulative_tokens: { input_tokens: 309481, output_tokens: 34264, total_tokens: 343745 }
+  }, null);
+  assert.strictEqual(liveUsageResult.is_estimated, false);
+  assert.strictEqual(liveUsageResult.is_cumulative_only, false);
+  assert.strictEqual(liveUsageResult.active_tokens, 15230);
+  assert.strictEqual(liveUsageResult.cumulative.total_tokens, 343745);
+
+  // Test stored session with messages but no last_usage
+  const storedMessagesResult = simulateGetSessionTokenUsage({
+    messages: mockMessages,
+    total_tokens: 343745,
+    cumulative_tokens: { input_tokens: 309481, output_tokens: 34264, total_tokens: 343745 }
+  }, null);
+  assert.strictEqual(storedMessagesResult.is_estimated, true);
+  assert.strictEqual(storedMessagesResult.is_cumulative_only, false);
+  assert.strictEqual(storedMessagesResult.active_tokens, estimatedContextTokens);
+  assert.strictEqual(storedMessagesResult.cumulative.total_tokens, 343745);
+
+  // Test unloaded session (only list-sessions cumulative item)
+  const cumulativeOnlyResult = simulateGetSessionTokenUsage(null, {
+    total_tokens: 343745,
+    input_tokens: 309481,
+    output_tokens: 34264
+  });
+  assert.strictEqual(cumulativeOnlyResult.is_cumulative_only, true);
+  assert.strictEqual(cumulativeOnlyResult.is_estimated, false);
+  assert.strictEqual(cumulativeOnlyResult.total_tokens, 343745);
+  assert.strictEqual(cumulativeOnlyResult.active_tokens, 0);
+
+  // 4. Verify hermes-bridge message-level usage pass-through
+  const bridgePath = path.join(__dirname, '..', 'bin', 'hermes-bridge.js');
+  const bridgeContent = fs.readFileSync(bridgePath, 'utf8');
+  assert.ok(
+    bridgeContent.includes('usage: (m.usage && typeof m.usage === \'object\') ? m.usage : null'),
+    'hermes-bridge.js handleGetSession must pass through message-level usage'
+  );
+
+  console.log('  ✔ context window token badge active prompt context vs cumulative tokens verified');
+}
+
 async function testSseStreamMultiByteUtf8Boundaries() {
   console.log('Testing: SSE stream multi-byte UTF-8 chunks across boundaries...');
   const testString = 'Start: é λ € 日本語 🚀 🌍 🎉 :End';
@@ -3185,6 +3341,7 @@ async function runAllTests() {
     await testBoundedReadersComprehensive();
     await testSecurityHardening();
     await testComprehensiveSecurityHardening();
+    await testContextWindowTokenBadgeIssue92();
     await testDeleteCreatedSessions();
     console.log('\n====================================');
     console.log(' All tests passed successfully! 🎉');

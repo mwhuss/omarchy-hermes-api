@@ -892,9 +892,9 @@ Panel {
           }
           if (res.session.total_tokens && res.session.total_tokens > 0) {
             cached.total_tokens = res.session.total_tokens
-            cached.last_usage = {
-              prompt_tokens: res.session.input_tokens || 0,
-              completion_tokens: res.session.output_tokens || 0,
+            cached.cumulative_tokens = {
+              input_tokens: res.session.input_tokens || 0,
+              output_tokens: res.session.output_tokens || 0,
               total_tokens: res.session.total_tokens
             }
           }
@@ -1310,6 +1310,12 @@ Panel {
       var turnTokens = usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0))
       if (turnTokens > 0) {
         cached.total_tokens = (cached.total_tokens || 0) + turnTokens
+        var prev = cached.cumulative_tokens || {}
+        cached.cumulative_tokens = {
+          input_tokens: (prev.input_tokens || 0) + (usage.prompt_tokens || 0),
+          output_tokens: (prev.output_tokens || 0) + (usage.completion_tokens || 0),
+          total_tokens: cached.total_tokens
+        }
       }
     }
     root.updateSessionCache(targetSessionId, cached)
@@ -1482,35 +1488,36 @@ Panel {
     return 0
   }
 
+  function estimateMessagesContextTokens(msgs) {
+    if (!Array.isArray(msgs) || msgs.length === 0) return 0
+    var totalChars = 0
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i]
+      if (!m) continue
+      totalChars += 16 + (m.content ? m.content.length : 0) + (m.reasoning ? m.reasoning.length : 0)
+      if (Array.isArray(m.tool_calls)) {
+        for (var tc = 0; tc < m.tool_calls.length; tc++) {
+          var call = m.tool_calls[tc]
+          if (call) totalChars += (call.name ? call.name.length : 0) + (call.arguments ? call.arguments.length : 0)
+        }
+      }
+    }
+    return Math.max(1, Math.round(totalChars / 3.8))
+  }
+
   function getSessionTokenUsage(sessionId, optItem) {
     var sid = sessionId || root.selectedSessionId
     if (!sid) return null
 
-    // 1. Check in-memory sessionCache (freshest for active streams)
+    var cached = null
     if (root.sessionCache) {
-      var cached = root.sessionCache[sid]
+      cached = root.sessionCache[sid]
       if (!cached && sid.indexOf(":") !== -1) {
         var rawPart = sid.split(":").slice(2).join(":")
         cached = root.sessionCache[rawPart]
       }
-      if (cached) {
-        if (cached.last_usage && typeof cached.last_usage === "object" && typeof cached.last_usage.total_tokens === "number") {
-          return cached.last_usage
-        }
-        if (typeof cached.total_tokens === "number" && cached.total_tokens > 0) {
-          return { total_tokens: cached.total_tokens }
-        }
-        if (Array.isArray(cached.messages)) {
-          for (var i = cached.messages.length - 1; i >= 0; i--) {
-            if (cached.messages[i] && cached.messages[i].usage) {
-              return cached.messages[i].usage
-            }
-          }
-        }
-      }
     }
 
-    // 2. Check optItem or root.sessions directly (from list-sessions, never evicted by LRU)
     var matchedItem = (optItem && (optItem.id === sid || optItem.raw_id === sid || (optItem.raw_id && sid.indexOf(":" + optItem.raw_id) !== -1))) ? optItem : null
     if (!matchedItem && root.sessions && Array.isArray(root.sessions)) {
       for (var s = 0; s < root.sessions.length; s++) {
@@ -1521,11 +1528,65 @@ Panel {
         }
       }
     }
-    if (matchedItem && typeof matchedItem.total_tokens === "number" && matchedItem.total_tokens > 0) {
+
+    // Resolve cumulative session totals
+    var cumulative = (cached && cached.cumulative_tokens)
+      || (cached && typeof cached.total_tokens === "number" && cached.total_tokens > 0 ? { input_tokens: 0, output_tokens: 0, total_tokens: cached.total_tokens } : null)
+      || (matchedItem && typeof matchedItem.total_tokens === "number" && matchedItem.total_tokens > 0 ? { input_tokens: matchedItem.input_tokens || 0, output_tokens: matchedItem.output_tokens || 0, total_tokens: matchedItem.total_tokens } : null)
+
+    // 1. Check for active single-turn usage in cached.last_usage or cached.messages
+    var activeUsage = (cached && cached.last_usage && typeof cached.last_usage === "object") ? cached.last_usage : null
+    if (!activeUsage && cached && Array.isArray(cached.messages)) {
+      for (var m = cached.messages.length - 1; m >= 0; m--) {
+        if (cached.messages[m] && cached.messages[m].usage && typeof cached.messages[m].usage === "object") {
+          activeUsage = cached.messages[m].usage
+          break
+        }
+      }
+    }
+
+    if (activeUsage) {
+      var pt = activeUsage.prompt_tokens || 0
+      var ct = activeUsage.completion_tokens || 0
+      var tt = activeUsage.total_tokens || (pt + ct)
       return {
-        prompt_tokens: matchedItem.input_tokens || 0,
-        completion_tokens: matchedItem.output_tokens || 0,
-        total_tokens: matchedItem.total_tokens
+        prompt_tokens: pt,
+        completion_tokens: ct,
+        total_tokens: tt,
+        active_tokens: (pt > 0 && ct > 0) ? (pt + ct) : (pt || tt || 0),
+        is_estimated: false,
+        is_cumulative_only: false,
+        cumulative: cumulative
+      }
+    }
+
+    // 3. Fallback for stored sessions: estimate active context from message texts
+    var msgs = (cached && Array.isArray(cached.messages)) ? cached.messages : ((root.selectedSessionId === sid && Array.isArray(root.messages)) ? root.messages : null)
+    if (msgs && msgs.length > 0) {
+      var est = root.estimateMessagesContextTokens(msgs)
+      if (est > 0) {
+        return {
+          prompt_tokens: est,
+          completion_tokens: 0,
+          total_tokens: est,
+          active_tokens: est,
+          is_estimated: true,
+          is_cumulative_only: false,
+          cumulative: cumulative
+        }
+      }
+    }
+
+    // 4. Fallback if only cumulative lifetime tokens are known
+    if (cumulative && cumulative.total_tokens > 0) {
+      return {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: cumulative.total_tokens,
+        active_tokens: 0,
+        is_estimated: false,
+        is_cumulative_only: true,
+        cumulative: cumulative
       }
     }
 
@@ -3208,12 +3269,14 @@ Panel {
                         root.sessionCache;
                         return root.getSessionTokenUsage(root.selectedSessionId, curItem);
                       }
-                      property int tokenCount: tokenUsage ? (tokenUsage.total_tokens || ((tokenUsage.prompt_tokens || 0) + (tokenUsage.completion_tokens || 0))) : 0
+                      property bool isCumulativeOnly: !!(tokenUsage && tokenUsage.is_cumulative_only)
+                      property bool isEstimated: !!(tokenUsage && tokenUsage.is_estimated)
+                      property int tokenCount: tokenUsage ? (tokenUsage.active_tokens || tokenUsage.prompt_tokens || tokenUsage.total_tokens || 0) : 0
                       property int contextCeiling: root.getSessionContextCeiling(root.selectedSessionId)
-                      property bool hasCeiling: contextCeiling > 0
+                      property bool hasCeiling: contextCeiling > 0 && !isCumulativeOnly
                       property int percentUsed: (hasCeiling && tokenCount > 0) ? Math.min(100, Math.round((tokenCount / contextCeiling) * 100)) : 0
-                      property bool isAlert: hasCeiling ? (percentUsed >= 90) : (tokenCount >= 100000)
-                      property bool isWarning: hasCeiling ? (percentUsed >= 70) : (tokenCount >= 64000)
+                      property bool isAlert: hasCeiling ? (percentUsed >= 90) : (!isCumulativeOnly && tokenCount >= 100000)
+                      property bool isWarning: hasCeiling ? (percentUsed >= 70) : (!isCumulativeOnly && tokenCount >= 64000)
                       visible: !!root.selectedSessionId && tokenCount > 0
                       height: 18
                       radius: 9
@@ -3230,6 +3293,44 @@ Panel {
                       border.width: (isWarning || isAlert) ? 1 : 0
                       implicitWidth: sessionTokenRow.implicitWidth + 12
                       Layout.alignment: Qt.AlignVCenter
+
+                      function getTooltipText() {
+                        if (!tokenUsage) return ""
+                        var lines = []
+                        if (isCumulativeOnly) {
+                          lines.push("Cumulative Session Tokens: " + root.formatTokenCount(tokenCount))
+                          if (tokenUsage.cumulative) {
+                            var cin = typeof tokenUsage.cumulative.input_tokens === "number" ? tokenUsage.cumulative.input_tokens.toLocaleString() : "0"
+                            var cout = typeof tokenUsage.cumulative.output_tokens === "number" ? tokenUsage.cumulative.output_tokens.toLocaleString() : "0"
+                            lines.push("(" + cin + " in / " + cout + " out)")
+                          }
+                        } else {
+                          var prefix = isEstimated ? "Estimated Active Context: ~" : "Active Context: "
+                          lines.push(prefix + root.formatTokenCount(tokenCount) + " tokens" + (isEstimated ? " (approx.)" : ""))
+                          if (contextCeiling > 0) {
+                            lines.push("Context Ceiling: " + root.formatTokenCount(contextCeiling) + " (" + percentUsed + "% used)")
+                          }
+                          if (tokenUsage.cumulative && typeof tokenUsage.cumulative.total_tokens === "number" && tokenUsage.cumulative.total_tokens > 0) {
+                            var sin = typeof tokenUsage.cumulative.input_tokens === "number" ? tokenUsage.cumulative.input_tokens.toLocaleString() : "0"
+                            var sout = typeof tokenUsage.cumulative.output_tokens === "number" ? tokenUsage.cumulative.output_tokens.toLocaleString() : "0"
+                            lines.push("Session Cumulative: " + root.formatTokenCount(tokenUsage.cumulative.total_tokens) + " total (" + sin + " in / " + sout + " out)")
+                          }
+                        }
+                        return root.sanitizePlain(lines.join("\n"), 256)
+                      }
+
+                      MouseArea {
+                        id: tokenBadgeHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.ArrowCursor
+                      }
+
+                      PanelToolTip {
+                        visible: tokenBadgeHover.containsMouse && sessionTokenBadge.getTooltipText().length > 0
+                        text: sessionTokenBadge.getTooltipText()
+                        fontFamily: root.fontFamily
+                      }
 
                       RowLayout {
                         id: sessionTokenRow
@@ -3250,9 +3351,16 @@ Panel {
                         Text {
                           id: sessionTokenText
                           textFormat: Text.PlainText
-                          text: sessionTokenBadge.hasCeiling
-                            ? (root.formatTokenCount(sessionTokenBadge.tokenCount) + "/" + root.formatTokenCount(sessionTokenBadge.contextCeiling) + " (" + sessionTokenBadge.percentUsed + "%)")
-                            : root.formatTokenCount(sessionTokenBadge.tokenCount)
+                          text: {
+                            if (sessionTokenBadge.isCumulativeOnly) {
+                              return root.formatTokenCount(sessionTokenBadge.tokenCount) + " total"
+                            }
+                            var countStr = (sessionTokenBadge.isEstimated ? "~" : "") + root.formatTokenCount(sessionTokenBadge.tokenCount)
+                            if (sessionTokenBadge.hasCeiling) {
+                              return countStr + "/" + root.formatTokenCount(sessionTokenBadge.contextCeiling) + " (" + sessionTokenBadge.percentUsed + "%)"
+                            }
+                            return countStr
+                          }
                           font.family: root.fontFamily
                           font.pixelSize: 9
                           font.weight: Font.Medium
