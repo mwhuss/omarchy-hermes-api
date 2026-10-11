@@ -107,3 +107,46 @@ _Avoid_: token bill, word count, character count
 A visual status badge reflecting token consumption against model context thresholds, alerting users as a conversation nears boundary limits.
 _Avoid_: memory bar, capacity meter, quota badge
 
+## Architectural Invariants
+
+**Strict Transport Encryption Invariant**:
+API keys and bearer credentials must never be transmitted over unencrypted HTTP to non-loopback, non-private remote network hosts. Remote endpoints must strictly use HTTPS.
+
+**Defensive Resource Bounding Invariant**:
+All external network stream ingestion, line buffering, error body parsing, tool event forwarding, and settings reads must enforce fixed upper byte and time bounds (e.g. 10m stream duration ceiling, 60s idle timeout, 1MB SSE line buffer, 500 tool events cap, 4096-byte label cap).
+
+**Least Privilege Secret Storage Invariant**:
+The Endpoint Configuration File must be stored exclusively in a permission-restricted private directory (`0700`) with restricted file mode (`0600`) owned by the process UID, isolating credentials from version-controlled dotfiles.
+
+**Atomic Persistence Invariant**:
+All filesystem mutations to settings must occur via atomic temporary file creation, `fdatasync`, replacement renaming, and parent directory `fsync` to guarantee crash resilience.
+
+**Fail-Closed Configuration Invariant**:
+Preference mutations (e.g. `set-hide-cron`, `set-app-window-geometry`) must fail closed without writing if existing configuration files are corrupt or malformed.
+
+**Ornamental Default Profile Invariant**:
+The inherent default profile representing an endpoint's base `hermes-agent` is rendered in the UI for user clarity but is strictly excluded from persistent storage in the Endpoint Configuration File.
+
+**UI Render Sandboxing Invariant**:
+Untrusted remote Markdown must be sanitized before passing to Qt Quick rich text engines to eliminate SSRF and local image loading, and external links must strictly adhere to the web-scheme allowlist (`http://`, `https://`).
+
+**Mutual Exclusivity Surface Invariant**:
+The status bar flyout panel and standalone App Window share in-memory state but are strictly mutually exclusive in display visibility to avoid concurrent rendering contention.
+
+## Component Boundaries
+
+**Presentation Boundary (Quickshell / QML)**:
+Comprises `Widget.qml`, visual desktop bar status icon, flyout panel (`KeyboardPanel`), standalone toplevel `FloatingWindow`, in-memory reactive state (`activeStreams`, `sessionCache`, `activeTarget`), client-side session ID generation, keyboard navigation, and IPC registration (`com.mwhuss.omarchy-hermes-api`). Delegates all disk I/O and network operations to subprocesses over standard I/O pipes.
+
+**Bridge Subprocess Boundary (`bin/hermes-bridge.js`)**:
+Comprises the zero-dependency Node.js CLI helper. Handles configuration discovery and resolution, endpoint and profile routing, HTTP/SSE network requests, streaming event parsing, atomic settings serialization, and defensive memory/time bounding. Communicates with Quickshell purely through structured JSON and NDJSON over stdio.
+
+**Security & Allowlist Boundary (`bin/url-guard.js`)**:
+Comprises the dual-environment URL scheme allowlist and Markdown sanitization logic. Operates identically within Quickshell's QJSEngine and Node.js testing environments, serving as the single source of truth for hyperlink safety and SSRF prevention.
+
+**Desktop Shell Control Boundary (`bin/hermes-toggle`)**:
+Comprises the command-line entry point for desktop hotkeys and external scripts to control plugin visibility via Quickshell IPC.
+
+**Backend & Gateway Boundary**:
+Comprises external Hermes Agent API instances and multiplexing gateway proxies exposing `/v1/chat/completions`, `/api/sessions/*`, and `/p/<profile>/...` endpoints.
+
