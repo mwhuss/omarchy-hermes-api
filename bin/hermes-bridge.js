@@ -854,7 +854,8 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
         tool_calls: parsedToolCalls,
         tool_name: m.tool_name || null,
         tool_call_id: m.tool_call_id || null,
-        reasoning: m.reasoning || m.reasoning_content || null
+        reasoning: m.reasoning || m.reasoning_content || null,
+        usage: (m.usage && typeof m.usage === 'object') ? m.usage : null
       };
     });
 
