@@ -27,7 +27,6 @@ Panel {
   property bool isConfirmingDeleteSession: false
   property bool showSystemPromptInput: false
   property string sessionSystemPrompt: ""
-  property string serverUrl: ""
   property string statusError: ""
   property string serverName: (typeof Quickshell !== "undefined" && typeof Quickshell.env === "function" && Quickshell.env("HERMES_API_SERVER_NAME")) || "Hermes"
 
@@ -162,10 +161,7 @@ Panel {
     return false
   }
 
-  function openAppWindow() {
-    if (root.promptInput) root.promptDraft = root.promptInput.text
-    root.appWindowOpen = true
-    root.close()
+  function resetTransientUi() {
     root.isConfirmingDeleteSession = false
     root.isConfirmingDeleteEndpoint = false
     root.isTargetDropdownOpen = false
@@ -175,6 +171,30 @@ Panel {
     triggerRefresh()
     root.loadSettings()
     Qt.callLater(function() { if (!root.isSettingsOpen && root.promptInput) root.promptInput.forceActiveFocus() })
+  }
+
+  function dismissActiveOverlay(closeCallback) {
+    if (root.isTargetDropdownOpen) {
+      root.isTargetDropdownOpen = false
+    } else if (root.isAgentPickerOpen) {
+      root.isAgentPickerOpen = false
+    } else if (root.isSettingsOpen) {
+      root.isSettingsOpen = false
+      root.loadSettings()
+    } else if (root.isConfirmingDeleteSession) {
+      root.isConfirmingDeleteSession = false
+    } else if (root.isEditingTitle) {
+      root.isEditingTitle = false
+    } else if (closeCallback) {
+      closeCallback()
+    }
+  }
+
+  function openAppWindow() {
+    if (root.promptInput) root.promptDraft = root.promptInput.text
+    root.appWindowOpen = true
+    root.close()
+    root.resetTransientUi()
   }
 
   function closeAppWindow() {
@@ -194,27 +214,25 @@ Panel {
     root.appWindowOpen ? root.closeAppWindow() : root.openAppWindow()
   }
 
-  function getMonogram(name) {
-    if (!name || typeof name !== "string") return "H"
+  function findAgentTarget(name) {
+    if (!name || typeof name !== "string") return null
     for (var i = 0; i < root.allAgentTargets.length; i++) {
       var t = root.allAgentTargets[i]
-      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
-        if (t.monogram) return t.monogram
-      }
+      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) return t
     }
-    var clean = name.trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
+    return null
+  }
+
+  function getMonogram(name) {
+    var t = root.findAgentTarget(name)
+    if (t && t.monogram) return t.monogram
+    var clean = String(name || "").trim().replace(/^endpoint-/i, "").replace(/[-_]/g, " ")
     return (clean[0] || "H").toUpperCase()
   }
 
   function getAgentColor(name) {
-    if (!name || typeof name !== "string") return "#3B82F6"
-    for (var i = 0; i < root.allAgentTargets.length; i++) {
-      var t = root.allAgentTargets[i]
-      if (t && (t.displayName === name || t.profileName === name || t.endpointName === name)) {
-        if (t.color) return t.color
-      }
-    }
-    return "#3B82F6"
+    var t = root.findAgentTarget(name)
+    return (t && t.color) ? t.color : "#3B82F6"
   }
 
   function getEndpointDisplayName(endpointId) {
@@ -258,15 +276,6 @@ Panel {
     return (target && target !== "Hermes") ? target : (root.serverName || "Hermes")
   }
 
-  function getSessionAgentDisplayName(s) {
-    if (!s) return root.serverName || "Hermes"
-    var epName = s.endpoint_name || getEndpointDisplayName(s.endpoint_id)
-    if (s.profile_name && s.profile_name !== "default") {
-      return epName ? (epName + " (" + s.profile_name + ")") : s.profile_name
-    }
-    return epName || (root.serverName || "Hermes")
-  }
-
   function getSessionMonogram(s) {
     if (s && s.monogram) return s.monogram
     var agentName = getSessionAgentName(s)
@@ -280,30 +289,25 @@ Panel {
   }
 
   function getSessionTarget(sessionId) {
-    if (!sessionId) {
-      return {
-        endpointId: (root.currentSessionTarget && root.currentSessionTarget.endpointId) || "",
-        endpointName: getEndpointDisplayName((root.currentSessionTarget && root.currentSessionTarget.endpointId) || ""),
-        profileName: (root.currentSessionTarget && root.currentSessionTarget.profileName) || "default"
-      }
-    }
-    for (var i = 0; i < root.sessions.length; i++) {
-      var s = root.sessions[i]
-      if (s.id === sessionId) {
-        return {
-          endpointId: s.endpoint_id || "",
-          endpointName: s.endpoint_name || getEndpointDisplayName(s.endpoint_id),
-          profileName: s.profile_name || "default"
+    if (sessionId) {
+      for (var i = 0; i < root.sessions.length; i++) {
+        var s = root.sessions[i]
+        if (s.id === sessionId) {
+          return {
+            endpointId: s.endpoint_id || "",
+            endpointName: s.endpoint_name || getEndpointDisplayName(s.endpoint_id),
+            profileName: s.profile_name || "default"
+          }
         }
       }
-    }
-    if (sessionId.indexOf(":") !== -1) {
-      var parts = sessionId.split(":")
-      if (parts.length >= 3) {
-        return {
-          endpointId: parts[0],
-          endpointName: getEndpointDisplayName(parts[0]),
-          profileName: parts[1] || "default"
+      if (sessionId.indexOf(":") !== -1) {
+        var parts = sessionId.split(":")
+        if (parts.length >= 3) {
+          return {
+            endpointId: parts[0],
+            endpointName: getEndpointDisplayName(parts[0]),
+            profileName: parts[1] || "default"
+          }
         }
       }
     }
@@ -345,14 +349,10 @@ Panel {
   }
 
   function activeTargetStatusColor() {
-    if (!root.activeTarget || root.activeTarget.endpointId === "all" || !root.activeTarget.endpointId) {
-      return root.isConnected ? "#10B981" : "#EF4444"
-    }
-    for (var i = 0; i < root.allAgentTargets.length; i++) {
-      var t = root.allAgentTargets[i]
-      if (t.endpointId === root.activeTarget.endpointId) {
-        return t.connected ? "#10B981" : "#EF4444"
-      }
+    var epId = root.activeTarget ? root.activeTarget.endpointId : ""
+    if (epId && epId !== "all") {
+      var t = root.allAgentTargets.find(function(x) { return x.endpointId === epId })
+      if (t) return t.connected ? "#10B981" : "#EF4444"
     }
     return root.isConnected ? "#10B981" : "#EF4444"
   }
@@ -433,7 +433,6 @@ Panel {
   property string activeSessionTitle: "New Session"
   property string currentModel: "hermes-agent"
   property string searchQuery: ""
-  property bool omarchyOnly: false
   property bool hideCronSessions: false
   property bool hasSelectedInitialSession: false
 
@@ -583,17 +582,7 @@ Panel {
       if (root.appWindowOpen) {
         root.closeAppWindow()
       }
-      root.isConfirmingDeleteSession = false
-      root.isConfirmingDeleteEndpoint = false
-      root.isTargetDropdownOpen = false
-      root.isAgentPickerOpen = false
-      root.settingsErrorMessage = ""
-      root.settingsSuccessMessage = ""
-      triggerRefresh()
-      root.loadSettings()
-      Qt.callLater(function() {
-        if (!root.isSettingsOpen && promptInput) promptInput.forceActiveFocus()
-      })
+      root.resetTransientUi()
     }
   }
 
@@ -663,7 +652,6 @@ Panel {
     try {
       var res = JSON.parse(String(text).trim())
       root.isConnected = res.connected === true
-      root.serverUrl = res.baseUrl || ""
       if (res.models && res.models.length > 0) {
         root.currentModel = res.models[0]
       }
@@ -917,7 +905,7 @@ Panel {
   }
 
   function collapseToSingleLine(raw) {
-    return String(raw || "").replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim()
+    return String(raw || "").replace(/\s+/g, " ").trim()
   }
 
   function sanitizeSessionTitle(raw) {
@@ -1393,9 +1381,6 @@ Panel {
 
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i]
-      if (omarchyOnly && s.source !== "omarchy-bar" && s.source !== "api-server") {
-        continue
-      }
       if (hideCronSessions && s.source === "cron") {
         continue
       }
@@ -1431,7 +1416,6 @@ Panel {
 
   onSessionsChanged: updateFilteredSessions()
   onSearchQueryChanged: updateFilteredSessions()
-  onOmarchyOnlyChanged: updateFilteredSessions()
   onHideCronSessionsChanged: updateFilteredSessions()
   onActiveTargetChanged: updateFilteredSessions()
 
@@ -1453,10 +1437,6 @@ Panel {
     return (count / 1000000).toFixed(1).replace(/\.0$/, "") + "M"
   }
 
-  function formatTokens(count) {
-    if (typeof count !== "number" || isNaN(count) || count <= 0) return ""
-    return formatTokenCount(count) + " tokens"
-  }
 
   function getSessionContextCeiling(sessionId) {
     var sid = sessionId || root.selectedSessionId
@@ -1681,24 +1661,24 @@ Panel {
     }
 
     var title = isError ? (targetTitle + " - Error") : targetTitle
-    var preview = root.sanitizePlain(String(content || "").replace(/[`*_~>#]/g, "").replace(/\s+/g, " "), 140)
+    var preview = UrlGuard.sanitizePlain(String(content || "").replace(/[`*_~>#]/g, "").replace(/\s+/g, " "), 140)
     if (!preview) {
       preview = isError ? "An error occurred." : "Response completed."
     }
 
     var notifyArgs = [
       "/usr/bin/notify-send",
-      "-a", root.sanitizePlain(root.serverName, 40) || "Hermes",
+      "-a", UrlGuard.sanitizePlain(root.serverName, 40) || "Hermes",
       "-u", isError ? "critical" : "normal"
     ]
     var cleanTargetId = targetId ? String(targetId).trim() : ""
-    if (root.isValidSessionId(cleanTargetId)) {
+    if (UrlGuard.isValidSessionId(cleanTargetId)) {
       var execArgv = ["/usr/bin/quickshell", "-p", "/usr/share/omarchy/shell", "ipc", "call",
         "com.mwhuss.omarchy-hermes-api", "openSession", cleanTargetId]
       notifyArgs.push("--hint=string:omarchy-exec-argv:" + JSON.stringify(execArgv))
     }
     notifyArgs.push("--")
-    notifyArgs.push(root.sanitizePlain(title, 80))
+    notifyArgs.push(UrlGuard.sanitizePlain(title, 80))
     notifyArgs.push(preview)
     Quickshell.execDetached(notifyArgs)
   }
@@ -1758,7 +1738,7 @@ Panel {
       root.isSettingsOpen = false
       if (sessionId && String(sessionId).trim() !== "") {
         var cleanId = String(sessionId).trim()
-        if (!root.isValidSessionId(cleanId)) return "invalid-session-id"
+        if (!UrlGuard.isValidSessionId(cleanId)) return "invalid-session-id"
         root.searchQuery = ""
         for (var s = 0; s < root.sessions.length; s++) {
           if (root.sessions[s].id === cleanId || root.sessions[s].raw_id === cleanId) {
@@ -1964,6 +1944,16 @@ Panel {
       return
     }
 
+    function parseCw(val, label) {
+      if (val === undefined || val === null || String(val).trim() === "") return { ok: true, val: null }
+      var n = parseInt(val, 10)
+      if (isNaN(n) || n < 1) {
+        root.settingsErrorMessage = label + " context window must be a positive integer."
+        return { ok: false }
+      }
+      return { ok: true, val: n }
+    }
+
     var eps = cloneSettings(root.settingsEndpoints)
     for (var i = 0; i < eps.length; i++) {
       var ep = eps[i]
@@ -1981,15 +1971,6 @@ Panel {
       if (isNaN(port) || port < 1 || port > 65535) {
         root.settingsErrorMessage = "Endpoint '" + name + "' port must be between 1 and 65535."
         return
-      }
-      function parseCw(val, label) {
-        if (val === undefined || val === null || String(val).trim() === "") return { ok: true, val: null }
-        var n = parseInt(val, 10)
-        if (isNaN(n) || n < 1) {
-          root.settingsErrorMessage = label + " context window must be a positive integer."
-          return { ok: false }
-        }
-        return { ok: true, val: n }
       }
       var epCw = parseCw(ep.contextWindow, "Endpoint '" + name + "'")
       if (!epCw.ok) return
@@ -2512,17 +2493,12 @@ Panel {
   }
 
   Component.onDestruction: {
-    if (statusProc.running) statusProc.signal(15)
-    if (listSessionsProc.running) listSessionsProc.signal(15)
-    if (getSessionProc.running) getSessionProc.signal(15)
-    if (deleteSessionProc.running) deleteSessionProc.signal(15)
-    if (renameSessionProc.running) renameSessionProc.signal(15)
-    if (getSettingsProc.running) getSettingsProc.signal(15)
-    if (saveSettingsProc.running) saveSettingsProc.signal(15)
-    if (setHideCronProc.running) setHideCronProc.signal(15)
-    if (setAppWindowGeometryProc.running) setAppWindowGeometryProc.signal(15)
-    if (listTargetsProc.running) listTargetsProc.signal(15)
-    if (setActiveTargetProc.running) setActiveTargetProc.signal(15)
+    var procs = [statusProc, listSessionsProc, getSessionProc, deleteSessionProc, renameSessionProc,
+                 getSettingsProc, saveSettingsProc, setHideCronProc, setAppWindowGeometryProc,
+                 listTargetsProc, setActiveTargetProc]
+    for (var i = 0; i < procs.length; i++) {
+      if (procs[i].running) procs[i].signal(15)
+    }
     if (root.activeStreams) {
       for (var sid in root.activeStreams) {
         var s = root.activeStreams[sid]
@@ -2620,7 +2596,7 @@ Panel {
       }
     }
 
-    return root.sanitizePlain(lines.join("\n"), 256)
+    return UrlGuard.sanitizePlain(lines.join("\n"), 256)
   }
 
   // ------------------------------------------------------------- Bar Button
@@ -3316,7 +3292,7 @@ Panel {
                             lines.push("Session Cumulative: " + root.formatTokenCount(tokenUsage.cumulative.total_tokens) + " total (" + sin + " in / " + sout + " out)")
                           }
                         }
-                        return root.sanitizePlain(lines.join("\n"), 256)
+                        return UrlGuard.sanitizePlain(lines.join("\n"), 256)
                       }
 
                       MouseArea {
@@ -4261,7 +4237,7 @@ Panel {
                             textFormat: Text.PlainText
                             id: msgTokenBadgeText
                             anchors.centerIn: parent
-                            text: root.formatTokens(msgTokenBadge.tokens)
+                            text: root.formatTokenCount(msgTokenBadge.tokens) + " tokens"
                             font.family: root.fontFamily
                             font.pixelSize: 8
                             font.weight: Font.Medium
@@ -6449,20 +6425,7 @@ Panel {
         }
       }
       onCloseRequested: {
-        if (root.isTargetDropdownOpen) {
-          root.isTargetDropdownOpen = false
-        } else if (root.isAgentPickerOpen) {
-          root.isAgentPickerOpen = false
-        } else if (root.isSettingsOpen) {
-          root.isSettingsOpen = false
-          root.loadSettings()
-        } else if (root.isConfirmingDeleteSession) {
-          root.isConfirmingDeleteSession = false
-        } else if (root.isEditingTitle) {
-          root.isEditingTitle = false
-        } else {
-          root.close()
-        }
+        root.dismissActiveOverlay(root.close)
       }
 
       ColumnLayout {
@@ -6542,20 +6505,7 @@ Panel {
         if (root.handleCommonShortcut(event)) return
         if (root.promptInput && root.promptInput.activeFocus) return
         if (event.key === Qt.Key_Escape) {
-          if (root.isTargetDropdownOpen) {
-            root.isTargetDropdownOpen = false
-          } else if (root.isAgentPickerOpen) {
-            root.isAgentPickerOpen = false
-          } else if (root.isSettingsOpen) {
-            root.isSettingsOpen = false
-            root.loadSettings()
-          } else if (root.isConfirmingDeleteSession) {
-            root.isConfirmingDeleteSession = false
-          } else if (root.isEditingTitle) {
-            root.isEditingTitle = false
-          } else {
-            root.closeAppWindow()
-          }
+          root.dismissActiveOverlay(root.closeAppWindow)
           event.accepted = true
         } else if (event.key === Qt.Key_Up) {
           root.navigatePromptHistory(true)
