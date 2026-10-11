@@ -368,8 +368,13 @@ function getAgentMonogram(name) {
   if (!trimmed) return 'H';
 
   const words = trimmed.split(/[\s\-_]+/).filter(Boolean);
+  if (words.length === 0) return 'H';
+
   if (words.length >= 2) {
-    return (words[0][0] + words[1][0]).toUpperCase();
+    const ch1 = [...words[0]][0] || '';
+    const ch2 = [...words[1]][0] || '';
+    const mono = (ch1 + ch2).toUpperCase();
+    return mono || 'H';
   }
 
   const single = words[0];
@@ -378,7 +383,8 @@ function getAgentMonogram(name) {
     return (upperMatches[0] + upperMatches[1]).toUpperCase();
   }
 
-  return single[0].toUpperCase();
+  const firstChar = [...single][0] || 'H';
+  return firstChar.toUpperCase();
 }
 
 function getAgentColor(name) {
@@ -395,9 +401,11 @@ function getAgentColor(name) {
     '#3B82F6', // Blue
   ];
   if (!name || typeof name !== 'string') return palette[0];
+  const trimmed = name.trim();
+  if (!trimmed) return palette[0];
   let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash << 5) - hash + name.charCodeAt(i);
+  for (let i = 0; i < trimmed.length; i++) {
+    hash = (hash << 5) - hash + trimmed.charCodeAt(i);
     hash |= 0;
   }
   const idx = Math.abs(hash) % palette.length;
@@ -989,15 +997,15 @@ async function handleStreamChat(options) {
     }) + '\n');
 
     const controller = new AbortController();
-    const IDLE_TIMEOUT_MS = 60000;
+    const IDLE_TIMEOUT_MS = parseInt(process.env.HERMES_IDLE_TIMEOUT_MS, 10) || 60000;
     let idleTimer = setTimeout(() => {
-      controller.abort(new Error('Stream request timed out due to 60s inactivity'));
+      controller.abort(new Error(`Stream request timed out due to ${IDLE_TIMEOUT_MS === 60000 ? '60s' : IDLE_TIMEOUT_MS + 'ms'} inactivity`));
     }, IDLE_TIMEOUT_MS);
 
     const resetIdleTimer = () => {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        controller.abort(new Error('Stream request timed out due to 60s inactivity'));
+        controller.abort(new Error(`Stream request timed out due to ${IDLE_TIMEOUT_MS === 60000 ? '60s' : IDLE_TIMEOUT_MS + 'ms'} inactivity`));
       }, IDLE_TIMEOUT_MS);
     };
 
@@ -1208,6 +1216,10 @@ async function handleStreamChat(options) {
           return;
         }
 
+        if (!chunk || typeof chunk !== 'object') {
+          return;
+        }
+
         // Capture usage from SSE stream done / final chunk or any chunk containing usage
         const usageCandidate = chunk.usage || (Array.isArray(chunk.choices) && chunk.choices[0]?.usage);
         if (usageCandidate && typeof usageCandidate === 'object') {
@@ -1317,6 +1329,8 @@ async function handleStreamChat(options) {
           processSseLine(line);
         }
       }
+
+      lineBuffer += decoder.decode();
 
       if (lineBuffer && lineBuffer.trim()) {
         processSseLine(lineBuffer);
