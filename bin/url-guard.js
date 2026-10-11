@@ -55,10 +55,8 @@ function isAllowedWebUrl(url) {
     if (close === -1) return false;
     if (!/^[0-9A-Fa-f:.]+$/.test(host.slice(1, close))) return false;
     var rest = host.slice(close + 1);
-    if (rest !== "") {
-      if (!/^:\d{1,5}$/.test(rest)) return false;
-      var portNum6 = parseInt(rest.slice(1), 10);
-      if (portNum6 < 1 || portNum6 > 65535) return false;
+    if (rest !== "" && (!/^:\d{1,5}$/.test(rest) || +rest.slice(1) < 1 || +rest.slice(1) > 65535)) {
+      return false;
     }
     return true;
   }
@@ -68,9 +66,7 @@ function isAllowedWebUrl(url) {
     if (host.indexOf(":") !== ci) return false; // second colon: not a port
     var port = host.slice(ci + 1);
     host = host.slice(0, ci);
-    if (!/^\d{1,5}$/.test(port)) return false;
-    var portNum = parseInt(port, 10);
-    if (portNum < 1 || portNum > 65535) return false;
+    if (!/^\d{1,5}$/.test(port) || +port < 1 || +port > 65535) return false;
   }
   // Dotted domain name or IPv4 literal: each label alphanumeric, no
   // leading/trailing hyphen, 1-63 chars.
@@ -81,13 +77,10 @@ function isAllowedWebUrl(url) {
   }
   // If the last label is all-numeric, this must be an IPv4 literal per RFC 1123
   // (TLDs cannot be all-numeric). Strictly validate all 4 octets.
-  var isAllNumeric = labels.every(function(l) { return /^\d+$/.test(l); });
   if (/^\d+$/.test(labels[labels.length - 1])) {
-    if (!isAllNumeric || labels.length !== 4) return false;
+    if (labels.length !== 4) return false;
     for (var j = 0; j < 4; j++) {
-      if (labels[j].length > 1 && labels[j].charAt(0) === "0") return false; // reject octal/leading zero
-      var octet = parseInt(labels[j], 10);
-      if (octet < 0 || octet > 255) return false;
+      if (!/^(0|[1-9]\d{0,2})$/.test(labels[j]) || +labels[j] > 255) return false;
     }
   }
   return true;

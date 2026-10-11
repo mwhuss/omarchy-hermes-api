@@ -64,12 +64,11 @@ function isPrivateOrLoopbackHost(hostname) {
 
 function parseEndpointUrl(rawUrl, defaultPort = 8642, strict = false) {
   let url = String(rawUrl || `http://127.0.0.1:${defaultPort}`).trim();
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url)) {
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      if (strict) throw new Error('Endpoint URL must use http or https protocol');
-      return new URL(`http://127.0.0.1:${defaultPort}`);
-    }
-  } else {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(url) && !url.startsWith('http://') && !url.startsWith('https://')) {
+    if (strict) throw new Error('Endpoint URL must use http or https protocol');
+    return new URL(`http://127.0.0.1:${defaultPort}`);
+  }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
     url = `http://${url}`;
   }
   try {
@@ -1617,11 +1616,9 @@ async function handleGetSettings() {
 
 function sanitizeAppWindow(raw) {
   if (raw && typeof raw === 'object') {
-    const w = parseInt(raw.width, 10);
-    const h = parseInt(raw.height, 10);
     return {
-      width: Math.min(7680, Math.max(560, isNaN(w) ? 800 : w)),
-      height: Math.min(4320, Math.max(480, isNaN(h) ? 650 : h))
+      width: Math.min(7680, Math.max(560, parseInt(raw.width, 10) || 800)),
+      height: Math.min(4320, Math.max(480, parseInt(raw.height, 10) || 650))
     };
   }
   return { width: 800, height: 650 };
