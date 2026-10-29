@@ -9,16 +9,16 @@ echo "==> Setting up Omarchy Hermes Menu Bar Plugin"
 echo "Source: $SRC_DIR"
 echo "Target: $TARGET_DIR"
 
-# Ensure Node.js 18+ is available
-if ! /usr/bin/node --version >/dev/null 2>&1; then
-  echo "Error: Node.js (>=18.0.0) is required but not found at /usr/bin/node." >&2
+# Ensure the Rust toolchain is available and build the bridge binary
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "Error: the Rust toolchain (cargo) is required to build the bridge binary but was not found." >&2
   exit 1
 fi
 
-if ! /usr/bin/node -e 'process.exit(process.versions.node.split(".")[0] >= 18 ? 0 : 1)' >/dev/null 2>&1; then
-  echo "Error: Node.js version 18 or higher is required (found $(/usr/bin/node -v 2>/dev/null))." >&2
-  exit 1
-fi
+echo "==> Building Rust bridge (cargo build --release)..."
+cargo build --release --manifest-path "$SRC_DIR/Cargo.toml" --target-dir "$SRC_DIR/target"
+chmod +x "$SRC_DIR/target/release/hermes-bridge"
+ln -sf "$SRC_DIR/target/release/hermes-bridge" "$SRC_DIR/bin/hermes-bridge"
 
 mkdir -p "$HOME/.config/omarchy/plugins"
 
@@ -34,8 +34,7 @@ fi
 echo "==> Symlinking plugin into Omarchy plugins directory..."
 ln -s "$SRC_DIR" "$TARGET_DIR"
 
-echo "==> Ensuring bridge script is executable..."
-chmod +x "$SRC_DIR/bin/hermes-bridge.js"
+echo "==> Ensuring helper scripts are executable..."
 chmod +x "$SRC_DIR/bin/hermes-toggle"
 
 echo "==> Plugin installation complete!"
