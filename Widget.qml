@@ -394,7 +394,7 @@ Panel {
     updateFilteredSessions()
     refreshSessions()
     setActiveTargetProc.command = [
-      "/usr/bin/node", "--", root.scriptPath, "set-active-target",
+      root.bridgePath, "set-active-target",
       "--endpoint", (endpointId && endpointId !== "all") ? endpointId : "all",
       "--profile", (endpointId && endpointId !== "all") ? (profileName || "default") : ""
     ]
@@ -488,8 +488,8 @@ Panel {
   readonly property color thinkingBadgeText: "#A855F7"
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  readonly property string scriptPath: {
-    var u = Qt.resolvedUrl("bin/hermes-bridge.js").toString()
+  readonly property string bridgePath: {
+    var u = Qt.resolvedUrl("bin/hermes-bridge").toString()
     return decodeURIComponent(u.replace(/^file:\/\//, ""))
   }
 
@@ -558,7 +558,7 @@ Panel {
     if (!root.selectedSessionId || root.isCurrentSessionStreaming || getSessionProc.running) return
     getSessionProc.buf = ""
     getSessionProc.errBuf = ""
-    var getArgs = ["/usr/bin/node", "--", root.scriptPath, "get-session"]
+    var getArgs = [root.bridgePath, "get-session"]
     var selTarget = root.getSessionTarget(root.selectedSessionId)
     if (selTarget.endpointId) getArgs.push("--endpoint", selTarget.endpointId)
     if (selTarget.profileName) getArgs.push("--profile", selTarget.profileName)
@@ -601,7 +601,7 @@ Panel {
     if (statusProc.running) return
     statusProc.buf = ""
     statusProc.errBuf = ""
-    statusProc.command = ["/usr/bin/node", "--", root.scriptPath, "status"]
+    statusProc.command = [root.bridgePath, "status"]
     statusProc.running = true
   }
 
@@ -609,7 +609,7 @@ Panel {
     if (listTargetsProc.running) return
     listTargetsProc.buf = ""
     listTargetsProc.errBuf = ""
-    listTargetsProc.command = ["/usr/bin/node", "--", root.scriptPath, "list-targets"]
+    listTargetsProc.command = [root.bridgePath, "list-targets"]
     listTargetsProc.running = true
   }
 
@@ -680,7 +680,7 @@ Panel {
     if (listSessionsProc.running) return
     listSessionsProc.buf = ""
     listSessionsProc.errBuf = ""
-    var args = ["/usr/bin/node", "--", root.scriptPath, "list-sessions"]
+    var args = [root.bridgePath, "list-sessions"]
     if (root.activeTarget && root.activeTarget.endpointId && root.activeTarget.endpointId !== "all") {
       args.push("--endpoint", root.activeTarget.endpointId)
       if (root.activeTarget.profileName) {
@@ -951,7 +951,7 @@ Panel {
 
     renameSessionProc.buf = ""
     renameSessionProc.errBuf = ""
-    var renArgs = ["/usr/bin/node", "--", root.scriptPath, "rename-session"]
+    var renArgs = [root.bridgePath, "rename-session"]
     var renTarget = root.getSessionTarget(selectedSessionId)
     if (renTarget.endpointId) renArgs.push("--endpoint", renTarget.endpointId)
     if (renTarget.profileName) renArgs.push("--profile", renTarget.profileName)
@@ -1019,7 +1019,7 @@ Panel {
     }
     deleteSessionProc.buf = ""
     deleteSessionProc.errBuf = ""
-    var delArgs = ["/usr/bin/node", "--", root.scriptPath, "delete-session"]
+    var delArgs = [root.bridgePath, "delete-session"]
     var delTarget = root.getSessionTarget(sessionId)
     if (delTarget.endpointId) delArgs.push("--endpoint", delTarget.endpointId)
     if (delTarget.profileName) delArgs.push("--profile", delTarget.profileName)
@@ -1183,7 +1183,7 @@ Panel {
     var procObj = streamProcessComponent.createObject(root, {
       targetSessionId: targetSessionId,
       pendingInput: jsonPayload,
-      command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"],
+      command: [root.bridgePath, "stream-chat", "--json-input"],
       running: true
     })
     if (jsonPayload && procObj.pendingInput) {
@@ -1746,7 +1746,7 @@ Panel {
     root.isConfirmingDeleteEndpoint = false
     getSettingsProc.buf = ""
     getSettingsProc.errBuf = ""
-    getSettingsProc.command = ["/usr/bin/node", "--", root.scriptPath, "get-settings"]
+    getSettingsProc.command = [root.bridgePath, "get-settings"]
     getSettingsProc.running = true
   }
 
@@ -1756,7 +1756,7 @@ Panel {
     setHideCronProc.buf = ""
     setHideCronProc.errBuf = ""
     setHideCronProc.desiredValue = (value === true)
-    setHideCronProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", root.hideCronSessions ? "true" : "false"]
+    setHideCronProc.command = [root.bridgePath, "set-hide-cron", root.hideCronSessions ? "true" : "false"]
     setHideCronProc.running = true
   }
 
@@ -1778,7 +1778,7 @@ Panel {
     var safeH = Math.max(480, Math.round(h))
     setAppWindowGeometryProc.buf = ""
     setAppWindowGeometryProc.errBuf = ""
-    setAppWindowGeometryProc.command = ["/usr/bin/node", "--", root.scriptPath, "set-app-window-geometry", String(safeW), String(safeH)]
+    setAppWindowGeometryProc.command = [root.bridgePath, "set-app-window-geometry", String(safeW), String(safeH)]
     setAppWindowGeometryProc.running = true
   }
 
@@ -1966,7 +1966,7 @@ Panel {
 
     saveSettingsProc.buf = ""
     saveSettingsProc.errBuf = ""
-    saveSettingsProc.command = ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
+    saveSettingsProc.command = [root.bridgePath, "save-settings", "--stdin"]
     saveSettingsProc.pendingInput = JSON.stringify({ endpoints: eps }) + "\n"
     saveSettingsProc.running = true
     if (saveSettingsProc.pendingInput) {
@@ -1984,7 +1984,7 @@ Panel {
     property string buf: ""
     property string errBuf: ""
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "status"]
+    command: [root.bridgePath, "status"]
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -2151,7 +2151,7 @@ Panel {
     property string buf: ""
     property string errBuf: ""
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "get-settings"]
+    command: [root.bridgePath, "get-settings"]
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -2189,7 +2189,7 @@ Panel {
     property string pendingInput: ""
     stdinEnabled: true
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "save-settings", "--stdin"]
+    command: [root.bridgePath, "save-settings", "--stdin"]
     onStarted: {
       if (saveSettingsProc.pendingInput) {
         saveSettingsProc.write(saveSettingsProc.pendingInput)
@@ -2233,7 +2233,7 @@ Panel {
     property string errBuf: ""
     property bool desiredValue: false
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "set-hide-cron", "false"]
+    command: [root.bridgePath, "set-hide-cron", "false"]
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -2286,7 +2286,7 @@ Panel {
     property string buf: ""
     property string errBuf: ""
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "set-app-window-geometry", "800", "650"]
+    command: [root.bridgePath, "set-app-window-geometry", "800", "650"]
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -2324,7 +2324,7 @@ Panel {
     property string buf: ""
     property string errBuf: ""
     running: false
-    command: ["/usr/bin/node", "--", root.scriptPath, "list-targets"]
+    command: [root.bridgePath, "list-targets"]
     stdout: SplitParser {
       splitMarker: ""
       onRead: function(chunk) {
@@ -2370,7 +2370,7 @@ Panel {
       property string pendingInput: ""
       stdinEnabled: true
       running: false
-      command: ["/usr/bin/node", "--", root.scriptPath, "stream-chat", "--json-input"]
+      command: [root.bridgePath, "stream-chat", "--json-input"]
       onStarted: {
         if (proc.pendingInput) {
           proc.write(proc.pendingInput)

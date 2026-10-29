@@ -2,15 +2,12 @@
   "name": "omarchy-hermes-api",
   "version": "1.2.0",
   "description": "Omarchy menu bar plugin for managing and interacting with Hermes Agent sessions",
-  "main": "bin/hermes-bridge.js",
+  "main": "bin/hermes-bridge",
   "scripts": {
-    "test": "node test/test-bridge.js",
+    "test": "cargo build --release && node test/test-bridge.js",
     "test:live": "HERMES_LIVE=1 node test/test-bridge.js",
     "reload": "omarchy-restart-shell",
     "install-plugin": "bash bin/install.sh"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   },
   "keywords": [
     "omarchy",

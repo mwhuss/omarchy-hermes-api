@@ -4,3 +4,5 @@ npm-debug.log*
 .scratch/
 *.log
 readme-preview.html
+target/
+bin/hermes-bridge

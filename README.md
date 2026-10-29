@@ -2,7 +2,7 @@
 
 A native [Omarchy](https://github.com/omarchy) menu bar plugin and flyout interface for interacting with [Hermes Agent](https://github.com/NousResearch/Hermes-Function-Calling) sessions via the [Hermes API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server).
 
-Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweight Node.js stdio bridge.
+Built with [Quickshell](https://quickshell.outfoxxed.me/) (QML) and a lightweight Rust stdio bridge.
 
 ![Hermes Agent Panel](preview.png)
 
@@ -216,7 +216,7 @@ If `settings.json` does not exist on initial startup, the plugin automatically s
    ```bash
    bash bin/install.sh
    ```
-   *(This verifies Node.js 18+ and symlinks the plugin to `~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api`.)*
+   *(This builds the Rust bridge with `cargo build --release` — the Rust toolchain is required — and symlinks the plugin to `~/.config/omarchy/plugins/com.mwhuss.omarchy-hermes-api`.)*
 
 3. **Enable the plugin in Omarchy Shell:**
    Add `"com.mwhuss.omarchy-hermes-api"` to your bar layout in `~/.config/omarchy/shell.json`:
@@ -243,11 +243,13 @@ If `settings.json` does not exist on initial startup, the plugin automatically s
 
 ## 🧪 Testing
 
-Run the automated bridge test suite using the built-in, zero-dependency mock Hermes API server (works offline on any development OS or CI):
+The bridge is a Rust binary. Build it first (`cargo build --release`), then run the automated bridge test suite using the built-in, zero-dependency mock Hermes API server (works offline on any development OS or CI):
 
 ```bash
-npm test
+npm test   # cargo build --release && node test/test-bridge.js
 ```
+
+> Note: `bin/url-guard.js` intentionally stays JavaScript — the QML UI imports it directly as a JS module. Only the subprocess bridge was ported to Rust.
 
 To run the integration tests against a live, running Hermes API server (defaulting to `http://127.0.0.1:8642` or `HERMES_API_SERVER_URL`):
 
@@ -279,8 +281,8 @@ This verifies:
                stdio (NDJSON streaming IPC)
                             │
 ┌───────────────────────────▼─────────────────────────────┐
-│               Node.js Subprocess Bridge                 │
-│                 (bin/hermes-bridge.js)                  │
+│               Rust Subprocess Bridge                    │
+│                (bin/hermes-bridge)                      │
 └───────────────────────────┬─────────────────────────────┘
                             │
               REST / OpenAI SSE Protocol
