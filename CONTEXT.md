@@ -13,7 +13,7 @@ A persistent, multi-turn conversational thread and execution state maintained by
 _Avoid_: Chat, thread, conversation
 
 **Bridge Subprocess**:
-A standalone Node.js CLI helper process spawned by Quickshell via stdio to execute OpenAI-compatible HTTP requests and stream structured events with zero third-party dependencies.
+A standalone Rust CLI helper process spawned by Quickshell via stdio to execute OpenAI-compatible HTTP requests and stream structured events with zero third-party runtime dependencies.
 _Avoid_: Daemon, backend server, microservice
 
 **Tool Progress Event**:
