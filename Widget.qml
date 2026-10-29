@@ -25,6 +25,9 @@ Panel {
   property bool isRefreshing: false
   property bool isEditingTitle: false
   property bool isConfirmingDeleteSession: false
+  property bool isExporting: false
+  property string exportFeedback: ""
+  property bool isExportMenuOpen: false
   property bool showSystemPromptInput: false
   property string sessionSystemPrompt: ""
   property string serverUrl: ""
@@ -511,6 +514,13 @@ Panel {
   }
 
   Timer {
+    id: exportFeedbackTimer
+    interval: 2000
+    repeat: false
+    onTriggered: root.exportFeedback = ""
+  }
+
+  Timer {
     id: settingsSuccessTimer
     interval: 3500
     repeat: false
@@ -567,6 +577,37 @@ Panel {
     getSessionProc.running = true
   }
 
+  function runSessionExport(mode) {
+    if (!root.selectedSessionId || root.isCurrentSessionStreaming || root.isExporting) return
+    root.isExporting = true
+    root.isExportMenuOpen = false
+    exportSessionProc.mode = mode
+    exportSessionProc.buf = ""
+    exportSessionProc.errBuf = ""
+    // The Session Cache travels over stdin (--json-input) as the bridge's
+    // offline fallback: a full transcript can far exceed the OS per-argument
+    // size limit.
+    var history = ""
+    var cached = root.sessionCache[root.selectedSessionId]
+    if (cached && Array.isArray(cached.messages) && cached.messages.length > 0) {
+      var item = root.currentSessionItem()
+      history = JSON.stringify({
+        title: (cached.title || (item && item.title)) || root.activeSessionTitle || "",
+        created_at: (item && item.created_at) || cached.created_at || null,
+        updated_at: cached.updated_at || null,
+        messages: cached.messages
+      })
+    }
+    var expTarget = root.getSessionTarget(root.selectedSessionId)
+    var payload = { sessionId: root.selectedSessionId, mode: mode }
+    if (expTarget.endpointId) payload.endpoint = expTarget.endpointId
+    if (expTarget.profileName) payload.profile = expTarget.profileName
+    if (history) payload.history = history
+    exportSessionProc.command = ["/usr/bin/node", "--", root.scriptPath, "export-session", "--json-input"]
+    exportSessionProc.pendingInput = JSON.stringify(payload) + "\n"
+    exportSessionProc.running = true
+  }
+
   function triggerRefresh() {
     root.isRefreshing = true
     refreshAnimationTimer.restart()
@@ -587,6 +628,7 @@ Panel {
       root.isConfirmingDeleteEndpoint = false
       root.isTargetDropdownOpen = false
       root.isAgentPickerOpen = false
+      root.isExportMenuOpen = false
       root.settingsErrorMessage = ""
       root.settingsSuccessMessage = ""
       triggerRefresh()
@@ -2147,6 +2189,55 @@ Panel {
   }
 
   Process {
+    id: exportSessionProc
+    property string buf: ""
+    property string errBuf: ""
+    property string mode: "copy"
+    property string pendingInput: ""
+    stdinEnabled: true
+    running: false
+    command: []
+    onStarted: {
+      if (exportSessionProc.pendingInput) {
+        exportSessionProc.write(exportSessionProc.pendingInput)
+        exportSessionProc.pendingInput = ""
+      }
+    }
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (exportSessionProc.buf.length < 65536) {
+          exportSessionProc.buf += chunk
+        }
+      }
+    }
+    stderr: SplitParser {
+      splitMarker: ""
+      onRead: function(chunk) {
+        if (exportSessionProc.errBuf.length < 8192) {
+          exportSessionProc.errBuf += chunk
+        }
+      }
+    }
+    onExited: function(exitCode) {
+      var ok = false
+      try {
+        var parsed = JSON.parse(exportSessionProc.buf.trim().split("\n").pop())
+        ok = parsed && parsed.success === true
+      } catch (e) {}
+      if (ok) {
+        root.exportFeedback = exportSessionProc.mode === "file" ? "Saved \u2713" : "Copied \u2713"
+      } else {
+        root.exportFeedback = "Export failed"
+      }
+      exportSessionProc.buf = ""
+      exportSessionProc.errBuf = ""
+      root.isExporting = false
+      exportFeedbackTimer.restart()
+    }
+  }
+
+  Process {
     id: getSettingsProc
     property string buf: ""
     property string errBuf: ""
@@ -2463,6 +2554,7 @@ Panel {
     if (getSessionProc.running) getSessionProc.signal(15)
     if (deleteSessionProc.running) deleteSessionProc.signal(15)
     if (renameSessionProc.running) renameSessionProc.signal(15)
+    if (exportSessionProc.running) exportSessionProc.signal(15)
     if (getSettingsProc.running) getSettingsProc.signal(15)
     if (saveSettingsProc.running) saveSettingsProc.signal(15)
     if (setHideCronProc.running) setHideCronProc.signal(15)
@@ -3301,6 +3393,127 @@ Panel {
                         font.family: root.fontFamily
                         font.pixelSize: 10
                         color: editHover.containsMouse ? root.accent : root.dimText
+                      }
+                    }
+
+                    // Export session icon button
+                    Rectangle {
+                      id: exportIconButton
+                      visible: !!root.selectedSessionId
+                      enabled: !root.isCurrentSessionStreaming && !root.isExporting
+                      opacity: enabled ? 1.0 : 0.4
+                      width: 22
+                      height: 22
+                      radius: 4
+                      color: exportHover.containsMouse ? root.cardHover : "transparent"
+
+                      MouseArea {
+                        id: exportHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: function(mouse) {
+                          root.isExportMenuOpen = false
+                          if (mouse.button === Qt.RightButton) {
+                            root.isExportMenuOpen = true
+                          } else {
+                            root.runSessionExport("copy")
+                          }
+                        }
+                        onPressAndHold: root.isExportMenuOpen = true
+                      }
+
+                      Text {
+                        textFormat: Text.PlainText
+                        anchors.centerIn: parent
+                        text: root.isExporting ? "\uF251" : (root.exportFeedback.indexOf("\u2713") !== -1 ? "\uF00C" : "\uF1C1") // spinner / check / file-export icon
+                        font.family: root.fontFamily
+                        font.pixelSize: 10
+                        color: root.exportFeedback.indexOf("\u2713") !== -1
+                          ? "#10B981"
+                          : (root.exportFeedback === "Export failed" ? "#EF4444" : (exportHover.containsMouse ? root.accent : root.dimText))
+                      }
+
+                      // Export destination popup menu
+                      Rectangle {
+                        id: exportMenuCard
+                        visible: root.isExportMenuOpen
+                        parent: exportIconButton
+                        x: Math.min(0, -(width - exportIconButton.width))
+                        y: exportIconButton.height + 4
+                        width: 132
+                        height: exportMenuCol.implicitHeight + 10
+                        radius: 6
+                        color: root.background
+                        border.color: root.border
+                        border.width: 1
+                        z: 200
+
+                        ColumnLayout {
+                          id: exportMenuCol
+                          anchors.fill: parent
+                          anchors.margins: 5
+                          spacing: 2
+
+                          Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 26
+                            radius: 4
+                            color: exportCopyHover.containsMouse ? root.cardHover : "transparent"
+
+                            MouseArea {
+                              id: exportCopyHover
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.isExportMenuOpen = false
+                                root.runSessionExport("copy")
+                              }
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              anchors.left: parent.left
+                              anchors.leftMargin: 8
+                              textFormat: Text.PlainText
+                              text: "\uF0C5  Copy"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.foreground
+                            }
+                          }
+
+                          Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 26
+                            radius: 4
+                            color: exportFileHover.containsMouse ? root.cardHover : "transparent"
+
+                            MouseArea {
+                              id: exportFileHover
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                root.isExportMenuOpen = false
+                                root.runSessionExport("file")
+                              }
+                            }
+
+                            Text {
+                              anchors.verticalCenter: parent.verticalCenter
+                              anchors.left: parent.left
+                              anchors.leftMargin: 8
+                              textFormat: Text.PlainText
+                              text: "\uF0C7  Save to File"
+                              font.family: root.fontFamily
+                              font.pixelSize: 10
+                              color: root.foreground
+                            }
+                          }
+                        }
                       }
                     }
 
