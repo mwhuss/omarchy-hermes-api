@@ -107,3 +107,11 @@ _Avoid_: token bill, word count, character count
 A visual status badge reflecting token consumption against model context thresholds, alerting users as a conversation nears boundary limits.
 _Avoid_: memory bar, capacity meter, quota badge
 
+**Session Export**:
+A Markdown rendering of a Hermes Session's complete settled transcript — dialogue, thinking, and Tool Progress Events — delivered to the clipboard or a file. The act and its rendering, not the storage location.
+_Avoid_: transcript dump, chat log, print
+
+**Export Destination**:
+The chosen delivery target of a Session Export: clipboard or the export directory (`~/Documents/Hermes/`).
+_Avoid_: save location, output path
+

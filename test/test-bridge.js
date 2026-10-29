@@ -33,6 +33,30 @@ function resetMockSessions() {
     updated_at: new Date().toISOString(),
     message_count: 1
   });
+  mockSessions.set('export-session-1', {
+    id: 'export-session-1',
+    title: 'Export Test Session',
+    model: 'hermes-agent',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 2
+  });
+  mockSessions.set('export-session-cap', {
+    id: 'export-session-cap',
+    title: 'Cap Session',
+    model: 'hermes-agent',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 1000
+  });
+  mockSessions.set('flaky-session', {
+    id: 'flaky-session',
+    title: 'a/b:c Export',
+    model: 'hermes-agent',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    message_count: 2
+  });
 }
 
 function startMockServer() {
@@ -83,6 +107,48 @@ function startMockServer() {
 
       // Session messages endpoint
       if (pathname.endsWith('/messages') && req.method === 'GET') {
+        const msgMatch = pathname.match(/\/sessions\/([^/]+)\/messages/);
+        const msgSid = msgMatch ? decodeURIComponent(msgMatch[1]) : '';
+
+        // Offline-fallback fixture: server errors force cache export
+        if (msgSid === 'flaky-session') {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error' }));
+          return;
+        }
+
+        // Export fixture: reasoning + tool_calls on the assistant turn
+        if (msgSid === 'export-session-1') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            messages: [
+              { role: 'user', content: 'List the files', timestamp: 1700000000 },
+              {
+                role: 'assistant',
+                content: 'Here are the files.',
+                reasoning: 'I should run ls.',
+                timestamp: 1700000001,
+                tool_calls: [
+                  { id: 'tc1', name: 'terminal', arguments: JSON.stringify({ command: 'ls -la' }) }
+                ]
+              },
+              { role: 'session_meta', content: null }
+            ]
+          }));
+          return;
+        }
+
+        // Truncation fixture: 1000 messages
+        if (msgSid === 'export-session-cap') {
+          const many = [];
+          for (let i = 0; i < 1000; i++) {
+            many.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `Message ${i}`, timestamp: 1700000000 + i });
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ messages: many }));
+          return;
+        }
+
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           messages: [
@@ -2425,6 +2491,123 @@ function testKeyboardShortcutsAndNavigation() {
   console.log('  ✔ keyboard navigation shortcuts and sidebar drawer verified');
 }
 
+async function testExportSession() {
+  console.log('Testing: export-session command...');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-export-'));
+  const homeEnv = { HOME: tmpHome };
+  const composite = 'endpoint-default:default:export-session-1';
+
+  try {
+    // (a) happy-path file export
+    const res = await runBridge(['export-session', composite, '--mode', 'file'], null, homeEnv);
+    assert.strictEqual(res.code, 0, `Exit code should be 0, got ${res.code}`);
+    const json = JSON.parse(res.stdout);
+    assert.strictEqual(json.success, true, `export should succeed: ${res.stdout}${res.stderr}`);
+    assert(json.path && json.path.includes(path.join('Documents', 'Hermes')), `path should be in Documents/Hermes, got ${json.path}`);
+    assert(fs.existsSync(json.path), 'exported file must exist');
+    const mode = fs.statSync(json.path).mode & 0o777;
+    assert.strictEqual(mode, 0o600, `exported file must be mode 0600, got ${mode.toString(8)}`);
+    const md = fs.readFileSync(json.path, 'utf8');
+    assert(md.includes('# Export Test Session'), 'markdown must contain title heading');
+    assert(md.includes('### User'), 'markdown must contain user heading');
+    assert(md.includes('### Assistant'), 'markdown must contain assistant heading');
+    assert(md.includes('> **Thinking:** I should run ls.'), 'markdown must contain thinking blockquote');
+    assert(md.includes('> **Tool: terminal**'), 'markdown must contain tool blockquote');
+    assert(md.includes('**Model:** hermes-agent'), 'markdown must contain model line from list-sessions');
+    assert(!md.includes('session_meta'), 'session_meta must not appear in export');
+    assert.strictEqual(json.message_count, 2, 'session_meta-filtered message count should be 2');
+
+    // (b) collision suffix
+    const res2 = await runBridge(['export-session', composite, '--mode', 'file'], null, homeEnv);
+    const json2 = JSON.parse(res2.stdout);
+    assert.strictEqual(json2.success, true, 'second export should succeed');
+    assert(json2.path.endsWith('Export Test Session (2).md'), `collision suffix expected, got ${json2.path}`);
+
+    // (c) title sanitization (server 500 forces cache fallback with hostile
+    // title; cache travels via --json-input stdin, never argv)
+    const cacheHistory = JSON.stringify({
+      title: 'a/b:c Export',
+      updated_at: new Date().toISOString(),
+      messages: [
+        { role: 'user', content: 'hi', timestamp: new Date().toISOString(), tool_events: [], reasoning: null },
+        { role: 'assistant', content: 'yo', timestamp: new Date().toISOString(), tool_events: [{ tool: 'terminal', label: 'ls', status: 'done' }], reasoning: 'think' }
+      ]
+    });
+    const res3 = await runBridge(['export-session', '--json-input'], JSON.stringify({
+      sessionId: 'endpoint-default:default:flaky-session',
+      mode: 'file',
+      history: JSON.parse(cacheHistory)
+    }) + '\n', homeEnv);
+    const json3 = JSON.parse(res3.stdout);
+    assert.strictEqual(json3.success, true, `cache-fallback export should succeed: ${res3.stdout}${res3.stderr}`);
+    assert(!json3.path.includes('/b'), `filename must strip slashes, got ${json3.path}`);
+    assert(json3.path.endsWith('ab:c Export.md') || json3.path.endsWith('abc Export.md'), `sanitized filename expected, got ${json3.path}`);
+    const md3 = fs.readFileSync(json3.path, 'utf8');
+    assert(md3.includes('Session Cache (offline)'), 'offline export must carry cache source note');
+    assert(md3.includes('> **Tool: terminal**'), 'cache tool_events must render as tool blockquotes');
+
+    // (d) copy mode with wl-copy absent
+    const res4 = await runBridge(['export-session', composite, '--mode', 'copy'], null, homeEnv);
+    const json4 = JSON.parse(res4.stdout);
+    assert.strictEqual(json4.success, false, 'copy must fail when wl-copy is absent');
+    assert(/wl-copy/.test(json4.error || ''), `error should mention wl-copy, got ${json4.error}`);
+
+    // (e) --json-input stdin path (QML invocation) with server 500 → cache
+    const jsonInputPayload = JSON.stringify({
+      sessionId: 'endpoint-default:default:flaky-session',
+      mode: 'file',
+      endpoint: 'endpoint-default',
+      profile: 'default',
+      history: JSON.parse(cacheHistory)
+    });
+    const resE = await runBridge(['export-session', '--json-input'], jsonInputPayload + '\n', homeEnv);
+    const jsonE = JSON.parse(resE.stdout);
+    assert.strictEqual(jsonE.success, true, `--json-input export should succeed: ${resE.stdout}${resE.stderr}`);
+    assert(jsonE.path.endsWith('.md') && fs.existsSync(jsonE.path), `--json-input export file expected, got ${jsonE.path}`);
+
+    // (f) 1000-message cap
+    const res5 = await runBridge(['export-session', 'endpoint-default:default:export-session-cap', '--mode', 'file'], null, homeEnv);
+    const json5 = JSON.parse(res5.stdout);
+    assert.strictEqual(json5.success, true, 'cap export should succeed');
+    const md5 = fs.readFileSync(json5.path, 'utf8');
+    assert(md5.includes('Export truncated at 1000 messages'), 'truncation note expected at 1000 messages');
+
+    console.log('  ✔ export-session passed (file mode, 0600 perms, collision, sanitization, offline cache, wl-copy failure, 1000 cap)');
+  } finally {
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
+function testFormatSessionMarkdownUnit() {
+  console.log('Testing: formatSessionMarkdown pure formatter...');
+  const { formatSessionMarkdown, sanitizeExportFilename } = require(bridgePath);
+
+  const md = formatSessionMarkdown(
+    { title: 'T', created_at: '2026-01-01T00:00:00Z', model: 'hermes-agent', endpoint_name: 'Local' },
+    [
+      { role: 'user', content: 'q', timestamp: '2026-01-01T00:00:00Z' },
+      { role: 'assistant', content: 'a', reasoning: 'line1\nline2', tool_calls: [{ name: 'x', arguments: 'arg', summary: 's' }] }
+    ]
+  );
+  assert(md.startsWith('# T\n'), 'title heading first');
+  assert(md.includes('**Created:** 2026-01-01T00:00:00Z'), 'created line');
+  assert(md.includes('> **Thinking:** line1\n> line2'), 'multiline reasoning stays inside the blockquote');
+  assert(md.includes('> **Tool: x** `arg` → s'), 'tool line format');
+
+  const mdNoModel = formatSessionMarkdown({ title: 'T' }, []);
+  assert(!mdNoModel.includes('**Model:**'), 'model line omitted when absent');
+
+  assert.strictEqual(sanitizeExportFilename('a/b:c*?', 'id1'), 'abc', 'strip forbidden chars');
+  assert.strictEqual(sanitizeExportFilename('   ', 'id1'), 'Session id1', 'blank title falls back');
+  assert.strictEqual(sanitizeExportFilename('..', 'id1'), 'Session id1', 'dot-dot falls back');
+  assert.strictEqual(sanitizeExportFilename('x'.repeat(200), 'id1').length, 80, 'max 80 chars');
+  const evil = sanitizeExportFilename('', '../../evil');
+  assert(!evil.includes('/') && !evil.includes('\\'), 'server-supplied fallback id must not carry path separators');
+  assert(evil.startsWith('Session '), 'fallback id is prefixed as a Session name');
+
+  console.log('  ✔ formatSessionMarkdown unit checks passed');
+}
+
 async function runAllTests() {
   console.log('====================================');
   console.log(' Running Omarchy Hermes API Tests');
@@ -2447,6 +2630,7 @@ async function runAllTests() {
     }
 
     testCliOptionsParser();
+    testFormatSessionMarkdownUnit();
     await testZeroDependencies();
     testKeyboardShortcutsAndNavigation();
     await testMockSseStreamWithCustomEvents();
@@ -2467,6 +2651,7 @@ async function runAllTests() {
     await testListSessionsEmptyEndpoints();
     await testGetSession();
     await testRenameSession();
+    await testExportSession();
     await testStreamChat();
     await testClientGeneratedSessionId();
     await testConcurrentStreams();

@@ -742,21 +742,10 @@ function formatToolContent(raw) {
   return { preview: str.split('\n')[0] || '', full: str };
 }
 
-async function handleGetSession(sessionId, optEndpoint, optProfile) {
-  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
-  if (!rawSessionId) {
-    console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
-    return;
-  }
-
-  let cfg;
-  try {
-    cfg = resolveConfig(endpointId, profileName);
-  } catch (err) {
-    console.log(JSON.stringify({ success: false, error: err.message }));
-    return;
-  }
-  try {
+// Shared transcript fetch for get-session and export-session: resolves the
+// session object and normalized messages, trying the prefixed route first
+// and falling back to the bare route.
+async function fetchSessionAndMessages(cfg, rawSessionId) {
     let sessionObj = {};
     const headers = { 'Accept': 'application/json' };
     if (cfg.apiKey) {
@@ -844,6 +833,26 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       };
     });
 
+    return { sessionObj, messages };
+}
+
+async function handleGetSession(sessionId, optEndpoint, optProfile) {
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
+  if (!rawSessionId) {
+    console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
+    return;
+  }
+
+  let cfg;
+  try {
+    cfg = resolveConfig(endpointId, profileName);
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
+    return;
+  }
+  try {
+    const { sessionObj, messages } = await fetchSessionAndMessages(cfg, rawSessionId);
+
     const tok = extractTokenMetrics(sessionObj);
     const compositeId = `${cfg.endpointId}:${cfg.profileName}:${rawSessionId}`;
     console.log(JSON.stringify({
@@ -873,6 +882,210 @@ async function handleGetSession(sessionId, optEndpoint, optProfile) {
       success: false,
       error: err.message
     }));
+  }
+}
+
+// Render a session transcript as Markdown. Pure function: no I/O.
+// `session` carries title/created_at/model/endpoint/profile metadata;
+// `messages` are the normalized get-session messages (server `tool_calls`
+// shape) or Session Cache entries (streaming `tool_events` shape).
+function formatSessionMarkdown(session, messages, opts = {}) {
+  const lines = [];
+  const title = (session && session.title) || 'Session';
+  lines.push(`# ${title}`);
+  lines.push('');
+
+  const meta = [];
+  meta.push(`**Title:** ${title}`);
+  const created = session && (session.created_at || session.updated_at);
+  if (created) meta.push(`**Created:** ${created}`);
+  if (session && session.model) meta.push(`**Model:** ${session.model}`);
+  if (session && session.endpoint_name) meta.push(`**Endpoint:** ${session.endpoint_name}`);
+  if (session && session.profile_name && session.profile_name !== 'default') meta.push(`**Profile:** ${session.profile_name}`);
+  if (opts.source) meta.push(`**Source:** ${opts.source}`);
+  lines.push(meta.join('  \n'));
+  lines.push('');
+
+  const msgs = Array.isArray(messages) ? messages : [];
+  for (const m of msgs) {
+    if (!m) continue;
+    const role = m.role === 'assistant' ? 'Assistant' : (m.role === 'system' ? 'System' : (m.role === 'tool' ? 'Tool' : 'User'));
+    const heading = m.timestamp ? `### ${role} \`${m.timestamp}\`` : `### ${role}`;
+    lines.push(heading);
+    lines.push('');
+    if (m.content) {
+      lines.push(String(m.content));
+      lines.push('');
+    }
+    if (m.reasoning) {
+      lines.push(`> **Thinking:** ${String(m.reasoning).split('\n').join('\n> ')}`);
+      lines.push('');
+    }
+    const tools = Array.isArray(m.tool_calls) && m.tool_calls.length ? m.tool_calls : (Array.isArray(m.tool_events) ? m.tool_events : []);
+    for (const tc of tools) {
+      if (!tc) continue;
+      const name = tc.name || tc.tool || 'tool';
+      const summary = tc.summary || tc.label || tc.status || '';
+      const args = tc.arguments ? ` \`${String(tc.arguments).split('\n')[0]}\`` : '';
+      lines.push(`> **Tool: ${name}**${args}${summary ? ` → ${summary}` : ''}`);
+    }
+    if (tools.length) lines.push('');
+  }
+
+  if (msgs.length >= 1000) {
+    lines.push('> _Export truncated at 1000 messages_');
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function sanitizeExportFilename(title, fallback) {
+  // Strip path separators, reserved chars and control chars from BOTH the
+  // title and the fallback: the fallback is the raw session id, which is
+  // server-supplied and must never reach path.join unsanitized.
+  const clean = v => String(v || '')
+    .replace(/[/\\:*?"<>|]/g, '')
+    .replace(/[\x00-\x1f\x7f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80)
+    .trim();
+  let name = clean(title);
+  if (!name || name === '.' || name === '..') name = `Session ${clean(fallback)}`;
+  return name;
+}
+
+async function handleExportSession(sessionId, mode, historyJson, optEndpoint, optProfile) {
+  const { endpointId, profileName, rawSessionId } = parseSessionIdentifier(sessionId, optEndpoint, optProfile);
+  if (!rawSessionId) {
+    console.log(JSON.stringify({ success: false, error: 'Session ID required' }));
+    return;
+  }
+  if (mode !== 'copy' && mode !== 'file') {
+    console.log(JSON.stringify({ success: false, error: `Unknown export mode: ${mode}` }));
+    return;
+  }
+
+  let sessionObj = null;
+  let messages = null;
+  let model = null;
+  let source = null;
+  let cfg = null;
+
+  try {
+    cfg = resolveConfig(endpointId, profileName);
+  } catch (err) {
+    // Config failure: fall through to cache fallback if history provided.
+  }
+
+  if (cfg) {
+    try {
+      const fetched = await fetchSessionAndMessages(cfg, rawSessionId);
+      sessionObj = fetched.sessionObj;
+      messages = fetched.messages;
+      // Resolve model from the list-sessions payload (get-session has none).
+      const sessions = await fetchSessionsForConfig(cfg);
+      const entry = sessions.find(s => s.raw_id === rawSessionId);
+      if (entry && entry.model) model = entry.model;
+    } catch (err) {
+      // Network failure: fall through to cache fallback.
+    }
+  }
+
+  // An empty transcript from a degraded server response counts as
+  // unavailable: prefer the caller-provided cache when present.
+  if ((!messages || messages.length === 0) && historyJson) {
+    try {
+      const cache = typeof historyJson === 'string' ? JSON.parse(historyJson) : historyJson;
+      if (cache && Array.isArray(cache.messages)) {
+        messages = cache.messages
+          .filter(m => m && m.role !== 'session_meta')
+          .slice(0, 1000)
+          .map(m => ({
+            role: m.role || 'user',
+            content: typeof m.content === 'string' ? m.content : (m.content != null ? JSON.stringify(m.content) : null),
+            timestamp: m.timestamp ? (typeof m.timestamp === 'number' ? new Date(m.timestamp * 1000).toISOString() : m.timestamp) : null,
+            tool_events: Array.isArray(m.tool_events) ? m.tool_events : [],
+            reasoning: m.reasoning || null
+          }));
+        sessionObj = {
+          title: cache.title || `Session ${rawSessionId}`,
+          created_at: cache.created_at || cache.updated_at,
+          updated_at: cache.updated_at,
+          endpoint_name: cfg ? cfg.endpointName : null,
+          profile_name: cfg ? cfg.profileName : null
+        };
+        source = 'Session Cache (offline)';
+      }
+    } catch (e) {
+      // Malformed history JSON: leave messages null.
+    }
+  }
+
+  if (!messages) {
+    console.log(JSON.stringify({ success: false, error: 'Session transcript unavailable (server unreachable and no cache provided)' }));
+    return;
+  }
+
+  const sessionMeta = Object.assign({}, sessionObj || {}, { model: model || (sessionObj && sessionObj.model) || null });
+  const markdown = formatSessionMarkdown(sessionMeta, messages, { source });
+  const bytes = Buffer.byteLength(markdown, 'utf8');
+
+  if (mode === 'copy') {
+    const { spawn } = require('child_process');
+    const child = spawn('/usr/bin/wl-copy', ['--'], { stdio: ['pipe', 'ignore', 'ignore'] });
+    let failed = false;
+    child.on('error', () => { failed = true; });
+    child.stdin.on('error', () => { failed = true; });
+    child.on('close', code => {
+      if (failed || code !== 0) {
+        console.log(JSON.stringify({ success: false, error: 'wl-copy unavailable' }));
+      } else {
+        console.log(JSON.stringify({ success: true, clipboard: true, bytes, message_count: messages.length }));
+      }
+    });
+    child.stdin.write(markdown);
+    child.stdin.end();
+    return;
+  }
+
+  // mode === 'file'
+  try {
+    const dir = path.join(os.homedir(), 'Documents', 'Hermes');
+    // ensurePrivateDir: rejects a planted symlink/non-dir/untrusted owner and
+    // unconditionally tightens an existing wider directory (same hardening as
+    // the settings file, per the 0600-transcript assumption in the plan).
+    ensurePrivateDir(dir);
+    const base = sanitizeExportFilename(sessionMeta.title, rawSessionId);
+    let target = path.join(dir, `${base}.md`);
+    let n = 2;
+    while (fs.existsSync(target)) {
+      target = path.join(dir, `${base} (${n}).md`);
+      n += 1;
+    }
+    const tmpPath = path.join(dir, `.${path.basename(target)}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    const fd = fs.openSync(tmpPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+    try {
+      fs.writeSync(fd, markdown);
+      fs.fdatasyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.renameSync(tmpPath, target);
+    // fsync the directory so the rename is durable (mirrors writeAtomicSettings)
+    let dirFd;
+    try {
+      dirFd = fs.openSync(dir, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY);
+      fs.fsyncSync(dirFd);
+    } catch (e) {
+      // best-effort directory sync
+    } finally {
+      if (dirFd !== undefined) try { fs.closeSync(dirFd); } catch (e) {}
+    }
+    console.log(JSON.stringify({ success: true, path: target, bytes, message_count: messages.length }));
+  } catch (err) {
+    console.log(JSON.stringify({ success: false, error: err.message }));
   }
 }
 
@@ -1942,6 +2155,42 @@ async function main() {
       await handleDeleteSession(rest[1], endpoint, profile);
       break;
 
+    case 'export-session': {
+      let exportMode = 'copy';
+      let exportHistory = null;
+      let useJsonInput = false;
+      // Scan from index 1: with --json-input the session id arrives on stdin,
+      // so the flag may occupy the slot where the id would normally sit.
+      // The cache transcript never travels in argv (/proc/<pid>/cmdline is
+      // world-readable); it arrives only via --json-input stdin.
+      for (let i = 1; i < rest.length; i++) {
+        if (rest[i] === '--mode' && rest[i + 1]) {
+          exportMode = rest[++i];
+        } else if (rest[i] === '--json-input') {
+          useJsonInput = true;
+        }
+      }
+      if (useJsonInput) {
+        try {
+          const stdinData = await readStdinLineOrEof(262144);
+          const parsed = JSON.parse(stdinData);
+          if (parsed.sessionId) {
+            // Stdin carries the composite id + cache history so a large
+            // transcript never crosses the OS per-argument size limit.
+            rest[1] = parsed.sessionId;
+          }
+          exportMode = parsed.mode || exportMode;
+          if (parsed.history) exportHistory = typeof parsed.history === 'string' ? parsed.history : JSON.stringify(parsed.history);
+          if (parsed.endpoint) endpoint = parsed.endpoint;
+          if (parsed.profile) profile = parsed.profile;
+        } catch (e) {
+          // ignore
+        }
+      }
+      await handleExportSession(rest[1], exportMode, exportHistory, endpoint, profile);
+      break;
+    }
+
     case 'get-settings':
       await handleGetSettings();
       break;
@@ -2010,7 +2259,7 @@ async function main() {
     default:
       console.log(JSON.stringify({
         success: false,
-        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, stream-chat, get-settings, save-settings, set-hide-cron, set-app-window-geometry`
+        error: `Unknown command: ${command}. Available: status, list-targets, set-active-target, list-sessions, get-session, delete-session, rename-session, export-session, stream-chat, get-settings, save-settings, set-hide-cron, set-app-window-geometry`
       }));
       process.exit(1);
   }
@@ -2032,6 +2281,8 @@ module.exports = {
   readBoundedText,
   readBoundedFile,
   ensurePrivateDir,
-  writeAtomicSettings
+  writeAtomicSettings,
+  formatSessionMarkdown,
+  sanitizeExportFilename
 };
 
